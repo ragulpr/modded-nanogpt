@@ -16,6 +16,9 @@ import torch._inductor.config as config
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.nn.attention.flex_attention import BlockMask, flex_attention #KoszarskyB
 
+import datetime
+import inspect
+
 # -----------------------------------------------------------------------------
 # Muon optimizer
 
@@ -448,12 +451,23 @@ if master_process:
         # begin the log by printing this file (the Python code)
         print(code, file=f)
         print('=' * 100, file=f)
+
 def print0(s, logonly=False):
     if master_process:
+        # Get timestamp and line number
+        timestamp = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        frame = inspect.currentframe().f_back
+        line_number = frame.f_lineno
+        
+        # Format the message with timestamp and line number
+        formatted_message = f"{timestamp} [Line {line_number}]: {s}"
+        
+        # Write to log file
         with logfile.open('a') as f:
             if not logonly:
-                print(s)
-            print(s, file=f)
+                print(formatted_message)
+            print(formatted_message, file=f)
+
 # log information about the hardware/software environment this is running on
 # and print the full `nvidia-smi` to file
 print0(f'Running python {sys.version}')
@@ -476,22 +490,30 @@ val_loader = DistributedDataLoader(args.input_val_bin, args.sequence_length, ddp
 print0(f"Training DataLoader: total number of tokens: {train_loader.total_num_tokens} across {len(train_loader.files)} files")
 print0(f"Validation DataLoader: total number of tokens: {val_loader.total_num_tokens} across {len(val_loader.files)} files")
 print0('='*100, logonly=True)
+print0("Getting first batch")
 inputs_train, targets_train = train_loader.next_batch()
-
+print0("Done.")
 # there are only 50257 unique GPT-2 tokens; we extend to nearest multiple of 128 for efficiency. suggested to me by @Grad62304977.
 # this originates from Karpathy's experiments.
 num_vocab = 50304
+print0("Creating model")
 model = GPT(GPTConfig(vocab_size=num_vocab, num_layers=12, num_heads=6, model_dim=768))
+print0("Moving to CUDA")
 model = model.cuda().bfloat16()
+print0("Done")
 for m in model.modules():
     if isinstance(m, CastedLinear):
         m.float()
 config.coordinate_descent_tuning = True # suggested by @Chillee
+print0("Compiling..")
 model = torch.compile(model)
+print0("Done.")
 # here we wrap model into DDP container
+print0("DPPing")
 model = DDP(model, device_ids=[ddp_local_rank], broadcast_buffers=False, gradient_as_bucket_view=True)
 raw_model = model.module # always contains the "raw" unwrapped model
 
+print0("Init params..")
 # init the optimizer(s)
 embed_params = [*raw_model.embed.parameters(), *raw_model.value_embeds.parameters()]
 optimizer1 = torch.optim.Adam(embed_params, lr=0.6, betas=(0.8, 0.95), fused=True)
@@ -502,6 +524,7 @@ scalar_params = [p for p in params if p.ndim < 2] + [raw_model.skip_weights]
 optimizer3 = Muon(matrix_params, lr=0.05, momentum=0.95)
 optimizer4 = torch.optim.Adam(scalar_params, lr=0.04, betas=(0.8, 0.95), fused=True)
 optimizers = [optimizer1, optimizer2, optimizer3, optimizer4]
+print0("Done.")
 # learning rate decay scheduler (linear warmup and cooldown)
 def get_lr(it):
     assert it <= args.num_iterations
@@ -522,7 +545,9 @@ sw_num_blocks_prev = 1
 # Start training loop
 training_time_ms = 0
 # start the clock
+print0("Cuda synchronize:")
 torch.cuda.synchronize()
+print0("Done, begin training:")
 t0 = time.perf_counter()
 # begin training
 for step in range(args.num_iterations + 1):
