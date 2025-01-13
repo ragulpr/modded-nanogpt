@@ -389,14 +389,14 @@ class Hyperparameters:
     val_files = 'data/fineweb10B/fineweb_val_*.bin' # input .bin to eval validation loss on
     val_tokens = 10485760 # how many tokens of validation data? it's important to keep this fixed for consistent comparisons
     # optimization
-    batch_size = 8*64*1024 # batch size in tokens
-    num_iterations = 1390 # number of iterations to run
+    batch_size = 8*32*1024 # batch size in tokens
+    num_iterations = 10 # number of iterations to run
     cooldown_frac = 0.4 # fraction of training spent cooling down the learning rate
     bf16_embeds = True
     # evaluation and logging
     val_loss_every = 125 # every how many steps to evaluate val loss? 0 for only at the end
     # implementation
-    max_device_batch_size = 64*1024 # batch size per device in tokens
+    max_device_batch_size = 32*1024 # batch size per device in tokens
     save_checkpoint = False
 args = Hyperparameters()
 
@@ -562,7 +562,7 @@ for step in range(train_steps + 1):
     approx_time = training_time_ms + 1000 * (time.perf_counter() - t0)
     print0(f'step:{step+1}/{train_steps} train_time:{approx_time:.0f}ms step_avg:{approx_time/timed_steps:.2f}ms', console=True)
 
-
+print0(f'VALIDATION @ taildropout', console=True)
 # run validation batches
 k_iterator = range(1, 768+1, 16)
 model.eval()
