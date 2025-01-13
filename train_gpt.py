@@ -17,6 +17,7 @@ import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
 # use of FlexAttention contributed by @KoszarskyB
 from torch.nn.attention.flex_attention import BlockMask, flex_attention
+from taildropout import TailDropout
 
 # -----------------------------------------------------------------------------
 # Muon optimizer
@@ -198,10 +199,15 @@ class MLP(nn.Module):
         self.c_fc = CastedLinear(dim, 4 * dim)
         self.c_proj = CastedLinear(4 * dim, dim)
         self.c_proj.weight.data.zero_() # zero init suggested by @Grad62304977
+        # Prob. of no dropout / example / mask
+        #  batch_dim = [batch]     => 1-p            => (1-p)^n_layers           ex p=1-(1-0.1)^(1/n_layers)  ~=1e-2
+        #  batch_dim = [batch,time]=> (1-p)^seq_len  => (1-p)^(seq_len*n_layers) ex p=1-(1-0.1)^(1/(1024*10)) ~=1e-5
+        self.dropout = TailDropout(p=0.1,batch_dim=0)
 
     def forward(self, x):
         x = self.c_fc(x)
         x = F.relu(x).square() # https://arxiv.org/abs/2109.08668v2; ~1-2% better than GELU; suggested by @SKYLINEZ007 and @Grad62304977
+        x = self.dropout(x)
         x = self.c_proj(x)
         return x
 
@@ -245,6 +251,7 @@ class GPT(nn.Module):
         # token value embeddings by @KoszarskyB - inspired by @Grad62304977's value residual learning
         # U-net structure on token value embeddings by @leloykun
         self.value_embeds = ValueEmbedding(vocab_size, model_dim)
+        self.dropout_head = TailDropout(p=0.1, batch_dim=[0,1])
         self.lm_head = CastedLinear(model_dim, vocab_size)
         self.lm_head.weight.data.zero_() # @Grad62304977
         # U-net design by @brendanh0gan
@@ -317,6 +324,7 @@ class GPT(nn.Module):
             x = self.blocks[self.num_encoder_layers + i](x, ve_dec[i], x0, block_mask)
 
         x = norm(x)
+        x = self.dropout_head(x)
         logits = self.lm_head(x)
         logits = 15 * torch.tanh(logits / 15) # @Grad62304977 added tanh softcapping, @KoszarskyB reduced it from 30 to 15
         logits = logits.float()
@@ -553,6 +561,41 @@ for step in range(train_steps + 1):
     # logging
     approx_time = training_time_ms + 1000 * (time.perf_counter() - t0)
     print0(f'step:{step+1}/{train_steps} train_time:{approx_time:.0f}ms step_avg:{approx_time/timed_steps:.2f}ms', console=True)
+
+
+# run validation batches
+k_iterator = range(1, 768+1, 16)
+model.eval()
+val_loader.reset()
+dropout_modules = {}
+for name, module in model.named_modules():
+    if isinstance(module, TailDropout):
+        if module._p>0:
+            dropout_modules[name]={
+                'module':module,
+                'val_losses':{k:0.0 for k in k_iterator}
+                }
+
+# calculate the number of steps to take in the val loop.
+val_batch_size = world_size * micro_bs
+assert args.val_tokens % val_batch_size == 0
+val_steps = args.val_tokens // val_batch_size
+with torch.no_grad():
+    for i in range(val_steps):
+        inputs_val, targets_val = val_loader.next_batch(val_batch_size)
+        for name,layer_info in dropout_modules.items():
+            for k in layer_info['val_losses']:
+                layer_info['module'].set_k(k)
+                layer_info['val_losses'][k] += ddp_model(inputs_val, targets_val, sliding_window_num_blocks)
+                layer_info['module'].set_k(None)
+        print0(f'val step{i}', console=True)
+
+    for name,layer_info in dropout_modules.items():
+        for k in layer_info['val_losses']:
+            dist.all_reduce(layer_info['val_losses'][k], op=dist.ReduceOp.AVG)
+            layer_info['val_losses'][k] /= val_steps
+            layer_info['val_losses'][k] = layer_info['val_losses'][k].item()
+            print0(f'{k:>4d} | {layer_info['val_losses'][k]:.6f} | {name}', console=True)
 
 print0(f'peak memory consumption: {torch.cuda.max_memory_allocated() // 1024 // 1024} MiB')
 dist.destroy_process_group()
