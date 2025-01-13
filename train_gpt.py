@@ -566,7 +566,7 @@ print0(f'VALIDATION @ taildropout', console=True)
 print0(f'peak memory consumption: {torch.cuda.max_memory_allocated() // 1024 // 1024} MiB', console=True)
 print0(f"Current: {torch.cuda.memory_allocated() // 1024 // 1024}MB", console=True)
 # run validation batches
-k_iterator = range(1, 768+1, 16)
+k_iterator = [0, 1] + list(range(16, 768+1, 16))
 model.eval()
 val_loader.reset()
 dropout_modules = {}
@@ -583,17 +583,14 @@ val_batch_size = world_size * micro_bs
 assert args.val_tokens % val_batch_size == 0
 val_steps = args.val_tokens // val_batch_size
 with torch.no_grad():
-    for i in range(val_steps):
-        inputs_val, targets_val = val_loader.next_batch(val_batch_size)
-        for name,layer_info in dropout_modules.items():
-            for k in layer_info['val_losses']:
-                layer_info['module'].set_k(k)
-                layer_info['val_losses'][k] += ddp_model(inputs_val, targets_val, sliding_window_num_blocks)
-                layer_info['module'].set_k(None)
-                print0(f"k={k} memory: {torch.cuda.memory_allocated() // 1024 // 1024}MB", console=True)
-
-    for name, layer_info in dropout_modules.items():
+    for name,layer_info in dropout_modules.items():
         for k in layer_info['val_losses']:
+            layer_info['module'].set_k(k)
+            for i in range(val_steps):
+                inputs_val, targets_val = val_loader.next_batch(val_batch_size)
+                layer_info['val_losses'][k] += ddp_model(inputs_val, targets_val, sliding_window_num_blocks)
+            print0(f"k={k} memory: {torch.cuda.memory_allocated() // 1024 // 1024}MB", console=True)
+ 
             dist.all_reduce(layer_info['val_losses'][k], op=dist.ReduceOp.AVG)
             layer_info['val_losses'][k] /= val_steps
             layer_info['val_losses'][k] = layer_info['val_losses'][k].item()
