@@ -563,6 +563,8 @@ for step in range(train_steps + 1):
     print0(f'step:{step+1}/{train_steps} train_time:{approx_time:.0f}ms step_avg:{approx_time/timed_steps:.2f}ms', console=True)
 
 print0(f'VALIDATION @ taildropout', console=True)
+print0(f'peak memory consumption: {torch.cuda.max_memory_allocated() // 1024 // 1024} MiB', console=True)
+print0(f"Current: {torch.cuda.memory_allocated() // 1024 // 1024}MB", console=True)
 # run validation batches
 k_iterator = range(1, 768+1, 16)
 model.eval()
@@ -588,7 +590,7 @@ with torch.no_grad():
                 layer_info['module'].set_k(k)
                 layer_info['val_losses'][k] += ddp_model(inputs_val, targets_val, sliding_window_num_blocks)
                 layer_info['module'].set_k(None)
-        print0(f'val step{i}', console=True)
+                print0(f"k={k} memory: {torch.cuda.memory_allocated() // 1024 // 1024}MB", console=True)
 
     for name, layer_info in dropout_modules.items():
         for k in layer_info['val_losses']:
