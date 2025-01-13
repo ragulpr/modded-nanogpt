@@ -590,12 +590,12 @@ with torch.no_grad():
                 layer_info['module'].set_k(None)
         print0(f'val step{i}', console=True)
 
-    for name,layer_info in dropout_modules.items():
+    for name, layer_info in dropout_modules.items():
         for k in layer_info['val_losses']:
             dist.all_reduce(layer_info['val_losses'][k], op=dist.ReduceOp.AVG)
             layer_info['val_losses'][k] /= val_steps
             layer_info['val_losses'][k] = layer_info['val_losses'][k].item()
-            print0(f'{k:>4d} | {layer_info['val_losses'][k]:.6f} | {name}', console=True)
+            print0(f"{k:>4d} | {layer_info['val_losses'][k]:.6f} | {name}", console=True)
 
 print0(f'peak memory consumption: {torch.cuda.max_memory_allocated() // 1024 // 1024} MiB')
 dist.destroy_process_group()
