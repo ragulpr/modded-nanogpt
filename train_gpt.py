@@ -352,7 +352,7 @@ class GPT(nn.Module):
         self.skip_weights = nn.Parameter(torch.ones(self.num_decoder_layers))
         # there are only 50257 unique GPT-2 tokens; we extend to nearest multiple of 128 for efficiency.
         # suggested to me by @Grad62304977. this originates from Karpathy's experiments.
-        self.dropout_head = TailDropout(p=0.1, batch_dim=[0,1])
+        self.dropout_head = TailDropout(p=0.1, batch_dim=0)
         self.lm_head = CastedLinear(model_dim, next_multiple_of_n(vocab_size, n=128))
         self.lm_head.weight.detach().zero_() # @Grad62304977
 
@@ -620,6 +620,61 @@ for step in range(train_steps + 1):
     approx_time = training_time_ms + 1000 * (time.perf_counter() - t0)
     print0(f"step:{step+1}/{train_steps} train_time:{approx_time:.0f}ms step_avg:{approx_time/timed_steps:.2f}ms", console=True)
 
+print0(f'VALIDATION @ taildropout', console=True)
+print("TailDropout(p=0.1, batch_dim=0) @ MLP + pre-head post norm")
+print0(f'peak memory consumption: {torch.cuda.max_memory_allocated() // 1024 // 1024} MiB', console=True)
+print0(f"Current: {torch.cuda.memory_allocated() // 1024 // 1024}MB", console=True)
+# run validation batches
+k_iterator = [0, 1] + list(range(16, 768+1, 16))
+model.eval()
+val_loader.reset()
+dropout_modules = {}
+for name, module in model.named_modules():
+    if isinstance(module, TailDropout):
+        if module._p>0:
+            dropout_modules[name]={
+                'module':module,
+                'val_losses':{k:0.0 for k in k_iterator}
+                }
+
+# calculate the number of steps to take in the val loop.
+# Get marginal importance of layer
+def _eval():               
+    model.eval()
+    val_bs = world_size * args.seq_len
+    assert args.val_tokens % val_bs == 0
+    val_steps = args.val_tokens // val_bs
+    val_loader = distributed_data_generator(args.val_files, val_bs, rank, world_size)
+    val_loss = 0
+    with torch.no_grad():
+        for _ in range(val_steps):
+            x, y = next(val_loader)
+            val_loss += model(x, y, sw_num_blks(window_size))
+    val_loss /= val_steps
+    del val_loader
+    dist.all_reduce(val_loss, op=dist.ReduceOp.AVG)
+    return val_loss.item()
+
+# Change k for every layer
+print("ALL")
+with torch.no_grad():
+    for k in k_iterator:
+        for name,layer_info in dropout_modules.items():
+            layer_info['module'].set_k(k)
+        val_loss = _eval()
+        print0(f"{k:>4d} | {val_loss:.6f} | mem: {torch.cuda.memory_allocated() // 1024 // 1024}MB", console=True)
+
+for name,layer_info in dropout_modules.items():
+    layer_info['module'].set_k(None)
+
+print("Leave-one-out")
+with torch.no_grad():
+    for name,layer_info in dropout_modules.items():
+        for k in layer_info['val_losses']:
+            layer_info['module'].set_k(k)
+            layer_info['val_losses'][k] = _eval()
+            print0(f"{k:>4d} | {layer_info['val_losses'][k]:.6f} | {name} | mem: {torch.cuda.memory_allocated() // 1024 // 1024}MB", console=True)
+            layer_info['module'].set_k(None)
 print0(
     f"peak memory allocated: {torch.cuda.max_memory_allocated() // 1024 // 1024} MiB "
     f"reserved: {torch.cuda.max_memory_reserved() // 1024 // 1024} MiB"
