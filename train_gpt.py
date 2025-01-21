@@ -628,7 +628,6 @@ print0(f"Current: {torch.cuda.memory_allocated() // 1024 // 1024}MB", console=Tr
 # run validation batches
 k_iterator = [0, 1] + list(range(16, 768+1, 16))
 model.eval()
-val_loader.reset()
 dropout_modules = {}
 for name, module in model.named_modules():
     if isinstance(module, TailDropout):
