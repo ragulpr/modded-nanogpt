@@ -493,7 +493,7 @@ logfile = None
 if master_process:
     run_id = uuid.uuid4()
     os.makedirs("logs", exist_ok=True)
-    logfile = f"logs/{run_id}.txt"
+    logfile = f"logs/p-{DROPOUT_P}-{run_id}.txt"
     print(logfile)
 def print0(s, console=False):
     if master_process:
@@ -664,7 +664,7 @@ def _eval():
     return val_loss.item()
 
 # Change k for every layer
-print("ALL")
+print0("ALL", console=True)
 with torch.no_grad():
     for k in k_iterator:
         for name,layer_info in dropout_modules.items():
@@ -676,16 +676,18 @@ for name,layer_info in dropout_modules.items():
     layer_info['module'].set_k(None)
 model.eval()
 
-print("Leave-one-out")
+print0("Leave-one-out", console=True)
 with torch.no_grad():
     for name,layer_info in dropout_modules.items():
-        for k in layer_info['val_losses']:
+        for k in k_iterator:
             layer_info['module'].set_k(k)
             layer_info['val_losses'][k] = _eval()
             print0(f"{k:>4d} | {layer_info['val_losses'][k]:.6f} | {name} | mem: {torch.cuda.memory_allocated() // 1024 // 1024}MB", console=True)
             layer_info['module'].set_k(None)
+
 print0(
     f"peak memory allocated: {torch.cuda.max_memory_allocated() // 1024 // 1024} MiB "
-    f"reserved: {torch.cuda.max_memory_reserved() // 1024 // 1024} MiB"
+    f"reserved: {torch.cuda.max_memory_reserved() // 1024 // 1024} MiB",
+    console=True
 )
 dist.destroy_process_group()
