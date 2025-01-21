@@ -663,6 +663,13 @@ def _eval():
         dist.all_reduce(val_loss, op=dist.ReduceOp.AVG)
         return val_loss.item()
 
+print0("DEBUG SINGLE K", console=True)
+for k in k_iterator:
+    for name,layer_info in dropout_modules.items():
+        layer_info['module'].set_k(16)
+    val_loss = _eval()
+    print0(f"{k:>4d} | {val_loss:.6f} | mem: {torch.cuda.memory_allocated() // 1024 // 1024}MB", console=True)
+
 # Change k for every layer
 print0("ALL", console=True)
 for k in k_iterator:
