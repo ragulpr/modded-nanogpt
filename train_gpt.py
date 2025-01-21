@@ -648,7 +648,7 @@ for name, module in model.named_modules():
 
 # calculate the number of steps to take in the val loop.
 # Get marginal importance of layer
-def _eval():               
+def _eval():
     val_bs = world_size * args.seq_len
     assert args.val_tokens % val_bs == 0
     val_steps = args.val_tokens // val_bs
@@ -664,8 +664,39 @@ def _eval():
     return val_loss.item()
 
 # Change k for every layer
+print0(f"TEST ({window_size})", console=True)
+with torch.no_grad(), torch._dynamo.config.patch({"disable": True}):
+    torch.cuda.synchronize()
+    for k in k_iterator:
+        print0(f"@ 1 | mem: {torch.cuda.memory_allocated() // 1024 // 1024}MB", console=True)
+        for name,layer_info in dropout_modules.items():
+            layer_info['module'].set_k(k)
+
+        print0(f"@ 2 | mem: {torch.cuda.memory_allocated() // 1024 // 1024}MB", console=True)
+        val_bs = world_size * args.seq_len
+        assert args.val_tokens % val_bs == 0
+        val_steps = args.val_tokens // val_bs
+        val_loader = distributed_data_generator(args.val_files, val_bs, rank, world_size)
+        val_loss = 0
+        print0(f"@ 3 | mem: {torch.cuda.memory_allocated() // 1024 // 1024}MB", console=True)
+        with torch.no_grad():
+            for _ in range(val_steps):
+                x, y = next(val_loader)
+                print0(f"@ 4 | mem: {torch.cuda.memory_allocated() // 1024 // 1024}MB", console=True)
+                val_loss += model(x, y, sw_num_blks(window_size))
+        print0(f"@ 5 | mem: {torch.cuda.memory_allocated() // 1024 // 1024}MB", console=True)
+        val_loss /= val_steps
+        print0(f"@ 6 | mem: {torch.cuda.memory_allocated() // 1024 // 1024}MB", console=True)
+        del val_loader
+        print0(f"@ 7 | mem: {torch.cuda.memory_allocated() // 1024 // 1024}MB", console=True)
+        dist.all_reduce(val_loss, op=dist.ReduceOp.AVG)
+        val_loss= val_loss.item()
+        print0(f"@ 8 | mem: {torch.cuda.memory_allocated() // 1024 // 1024}MB", console=True)
+        print0(f"{k:>4d} | {val_loss:.6f} | mem: {torch.cuda.memory_allocated() // 1024 // 1024}MB", console=True)
+
+# Change k for every layer
 print0("ALL", console=True)
-with torch.no_grad():
+with torch.no_grad(), torch._dynamo.config.patch({"disable": True}):
     for k in k_iterator:
         for name,layer_info in dropout_modules.items():
             layer_info['module'].set_k(k)
