@@ -468,7 +468,7 @@ class Hyperparameters:
     val_tokens = 10485760//8 # how many tokens of validation data? it's important to keep this fixed for consistent comparisons
     # optimization
     batch_size = 1*16*1024 # batch size in tokens
-    num_iterations = 100 # number of iterations to run
+    num_iterations = 15 # number of iterations to run
     cooldown_frac = 0.4 # fraction of training spent cooling down the learning rate
     # evaluation and logging
     val_loss_every = 1 # every how many steps to evaluate val loss? 0 for only at the end
