@@ -664,6 +664,20 @@ def _eval():
     return val_loss.item()
 
 # Change k for every layer
+print0("ALL", console=True)
+with torch.no_grad():
+    for k in k_iterator:
+        for name,layer_info in dropout_modules.items():
+            layer_info['module'].set_k(k)
+        val_loss = _eval()
+        print0(f"{k:>4d} | {val_loss:.6f} | mem: {torch.cuda.memory_allocated() // 1024 // 1024}MB", console=True)
+
+for name,layer_info in dropout_modules.items():
+    layer_info['module'].set_k(None)
+model.eval()
+
+################################
+# Change k for every layer
 print0(f"TEST ({window_size})", console=True)
 with torch.no_grad():
     torch.cuda.synchronize()
@@ -692,20 +706,10 @@ with torch.no_grad():
         dist.all_reduce(val_loss, op=dist.ReduceOp.AVG)
         val_loss= val_loss.item()
         print0(f"@ 8 | mem: {torch.cuda.memory_allocated() // 1024 // 1024}MB", console=True)
+        torch.cuda.empty_cache()
+        print0(f"@ 9 | mem: {torch.cuda.memory_allocated() // 1024 // 1024}MB", console=True)
         print0(f"{k:>4d} | {val_loss:.6f} | mem: {torch.cuda.memory_allocated() // 1024 // 1024}MB", console=True)
-
-# Change k for every layer
-print0("ALL", console=True)
-with torch.no_grad(), torch._dynamo.config.patch({"disable": True}):
-    for k in k_iterator:
-        for name,layer_info in dropout_modules.items():
-            layer_info['module'].set_k(k)
-        val_loss = _eval()
-        print0(f"{k:>4d} | {val_loss:.6f} | mem: {torch.cuda.memory_allocated() // 1024 // 1024}MB", console=True)
-
-for name,layer_info in dropout_modules.items():
-    layer_info['module'].set_k(None)
-model.eval()
+################
 
 print0("Leave-one-out", console=True)
 with torch.no_grad():
