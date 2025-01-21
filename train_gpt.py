@@ -457,7 +457,7 @@ class Hyperparameters:
     # data
     train_files = "data/fineweb10B/fineweb_train_*.bin" # input .bin to train on
     val_files = "data/fineweb10B/fineweb_val_*.bin" # input .bin to eval validation loss on
-    val_tokens = 10485760 # how many tokens of validation data? it's important to keep this fixed for consistent comparisons
+    val_tokens = 10485760//8 # how many tokens of validation data? it's important to keep this fixed for consistent comparisons
     # optimization
     batch_size = 1*64*1024 # batch size in tokens
     num_iterations = 1393 # number of iterations to run
