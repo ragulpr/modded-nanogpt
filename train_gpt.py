@@ -610,7 +610,7 @@ for step in range(train_steps + 1):
         loss.backward()
 
     avg_loss = total_loss / (len(inputs) // args.seq_len)
-    dist.all_reduce(avg_loss, op=dist.ReduceOp.AVG)
+    # dist.all_reduce(avg_loss, op=dist.ReduceOp.AVG)
     avg_loss = avg_loss.item()
 
     for param in model.parameters():
