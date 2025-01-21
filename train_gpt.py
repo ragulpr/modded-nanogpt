@@ -16,7 +16,7 @@ import torch.nn.functional as F
 import torch.distributed as dist
 # use of FlexAttention contributed by @KoszarskyB
 from torch.nn.attention.flex_attention import BlockMask, flex_attention
-torch._inductor.config.coordinate_descent_tuning = True # turn this off for a faster compile time (but slightly slower run)
+torch._inductor.config.coordinate_descent_tuning = False # turn this off for a faster compile time (but slightly slower run)
 
 # -----------------------------------------------------------------------------
 # Custom operators : FP8 matmul for lm_head by @YouJiacheng
@@ -621,7 +621,7 @@ for step in range(train_steps + 1):
     print0(f"step:{step+1}/{train_steps} train_time:{approx_time:.0f}ms step_avg:{approx_time/timed_steps:.2f}ms", console=True)
 
 print0(f'VALIDATION @ taildropout', console=True)
-print("TailDropout(p=0.1, batch_dim=0) @ MLP + pre-head post norm")
+print("TailDropout(p=0.1, batch_dim=0) @ MLP + pre-headpost norm")
 print0(f'peak memory consumption: {torch.cuda.max_memory_allocated() // 1024 // 1024} MiB', console=True)
 print0(f"Current: {torch.cuda.memory_allocated() // 1024 // 1024}MB", console=True)
 # run validation batches
