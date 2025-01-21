@@ -556,6 +556,22 @@ torch.cuda.synchronize()
 t0 = time.perf_counter()
 # begin training
 train_steps = args.num_iterations
+
+def _eval():  
+    val_bs = world_size * args.seq_len
+    assert args.val_tokens % val_bs == 0
+    val_steps = args.val_tokens // val_bs
+    val_loader = distributed_data_generator(args.val_files, val_bs, rank, world_size)
+    val_loss = 0
+    with torch.no_grad():
+        for _ in range(val_steps):
+            x, y = next(val_loader)
+            val_loss += model(x, y, sw_num_blks(window_size))
+    val_loss /= val_steps
+    del val_loader
+    dist.all_reduce(val_loss, op=dist.ReduceOp.AVG)
+    return val_loss
+
 for step in range(train_steps + 1):
     last_step = (step == train_steps)
     # This effectively ignores timing first 10 steps, which are slower for weird reasons.
@@ -575,18 +591,7 @@ for step in range(train_steps + 1):
         torch.cuda.synchronize()
         training_time_ms += 1000 * (time.perf_counter() - t0)
         model.eval()
-        val_bs = world_size * args.seq_len
-        assert args.val_tokens % val_bs == 0
-        val_steps = args.val_tokens // val_bs
-        val_loader = distributed_data_generator(args.val_files, val_bs, rank, world_size)
-        val_loss = 0
-        with torch.no_grad():
-            for _ in range(val_steps):
-                x, y = next(val_loader)
-                val_loss += model(x, y, sw_num_blks(window_size))
-        val_loss /= val_steps
-        del val_loader
-        dist.all_reduce(val_loss, op=dist.ReduceOp.AVG)
+        val_loss = _eval()
         mem = f"{torch.cuda.max_memory_allocated() // 1024 // 1024} MiB "
         print0(f"step:{step}/{train_steps} val_loss:{val_loss:.4f} train_time:{training_time_ms:.0f}ms step_avg:{training_time_ms/(timed_steps-1):.2f}ms mem:{mem}", console=True)
         model.train()
@@ -649,29 +654,6 @@ for name, module in model.named_modules():
 
 # calculate the number of steps to take in the val loop.
 # Get marginal importance of layer
-def _eval():
-    with torch.no_grad():
-        print0(f"@ 0 | mem: {torch.cuda.memory_allocated() // 1024 // 1024}MB", console=True)        
-        val_bs = world_size * args.seq_len
-        assert args.val_tokens % val_bs == 0
-        val_steps = args.val_tokens // val_bs
-        print0(f"@ 1 | mem: {torch.cuda.memory_allocated() // 1024 // 1024}MB", console=True)        
-        val_loader = distributed_data_generator(args.val_files, val_bs, rank, world_size)
-        print0(f"@ 2 | mem: {torch.cuda.memory_allocated() // 1024 // 1024}MB", console=True)        
-        val_loss = 0
-        for i in range(val_steps):
-            x, y = next(val_loader)
-            val_loss += model(x, y, sw_num_blks(window_size)) # TODO MEM LEAK
-            print0(f"@ 4 {i}| mem: {torch.cuda.memory_allocated() // 1024 // 1024}MB", console=True)        
-        val_loss /= val_steps
-        print0(f"@ 5 | mem: {torch.cuda.memory_allocated() // 1024 // 1024}MB", console=True)        
-        del val_loader
-        dist.all_reduce(val_loss, op=dist.ReduceOp.AVG)
-        torch.cuda.empty_cache()
-        torch.cuda.synchronize()     
-        val_loss = val_loss.item()
-        print0(f"@ 6 | mem: {torch.cuda.memory_allocated() // 1024 // 1024}MB", console=True)        
-        return val_loss
 
 # Change k for every layer
 print0("TEST", console=True)
