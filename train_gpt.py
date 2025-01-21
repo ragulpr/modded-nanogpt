@@ -465,13 +465,13 @@ class Hyperparameters:
     # data
     train_files = "data/fineweb10B/fineweb_train_*.bin" # input .bin to train on
     val_files = "data/fineweb10B/fineweb_val_*.bin" # input .bin to eval validation loss on
-    val_tokens = 10485760 # how many tokens of validation data? it's important to keep this fixed for consistent comparisons
+    val_tokens = 10485760//8 # how many tokens of validation data? it's important to keep this fixed for consistent comparisons
     # optimization
-    batch_size = 8*16*1024 # batch size in tokens
-    num_iterations = 15 # number of iterations to run
+    batch_size = 1*16*1024 # batch size in tokens
+    num_iterations = 100 # number of iterations to run
     cooldown_frac = 0.4 # fraction of training spent cooling down the learning rate
     # evaluation and logging
-    val_loss_every = 125 # every how many steps to evaluate val loss? 0 for only at the end
+    val_loss_every = 1 # every how many steps to evaluate val loss? 0 for only at the end
     # implementation
     seq_len = 64*1024 # FlexAttention sequence length
     save_checkpoint = False
@@ -584,10 +584,11 @@ for step in range(train_steps + 1):
             for _ in range(val_steps):
                 x, y = next(val_loader)
                 val_loss += model(x, y, sw_num_blks(window_size))
-            val_loss /= val_steps
-            del val_loader
-            dist.all_reduce(val_loss, op=dist.ReduceOp.AVG)
-        print0(f"step:{step}/{train_steps} val_loss:{val_loss:.4f} train_time:{training_time_ms:.0f}ms step_avg:{training_time_ms/(timed_steps-1):.2f}ms", console=True)
+        val_loss /= val_steps
+        del val_loader
+        dist.all_reduce(val_loss, op=dist.ReduceOp.AVG)
+        mem = f"{torch.cuda.max_memory_allocated() // 1024 // 1024} MiB "
+        print0(f"step:{step}/{train_steps} val_loss:{val_loss:.4f} train_time:{training_time_ms:.0f}ms step_avg:{training_time_ms/(timed_steps-1):.2f}ms mem:{mem}", console=True)
         model.train()
         # start the clock again
         torch.cuda.synchronize()
@@ -601,34 +602,34 @@ for step in range(train_steps + 1):
         # the last step only has the validation loop, so break to avoid training
         break
 
-    # --------------- TRAINING SECTION BEGIN -----------------
-    inputs, targets = next(train_loader)
-    total_loss = 0
-    for input_seq, target_seq in zip(inputs.split(args.seq_len), targets.split(args.seq_len)):
-        loss = model(input_seq, target_seq, sw_num_blks(window_size))
-        total_loss += loss
-        loss.backward()
+    # # --------------- TRAINING SECTION BEGIN -----------------
+    # inputs, targets = next(train_loader)
+    # total_loss = 0
+    # for input_seq, target_seq in zip(inputs.split(args.seq_len), targets.split(args.seq_len)):
+    #     loss = model(input_seq, target_seq, sw_num_blks(window_size))
+    #     total_loss += loss
+    #     loss.backward()
 
-    avg_loss = total_loss / (len(inputs) // args.seq_len)
-    # dist.all_reduce(avg_loss, op=dist.ReduceOp.AVG)
-    avg_loss = avg_loss.item()
+    # avg_loss = total_loss / (len(inputs) // args.seq_len)
+    # # dist.all_reduce(avg_loss, op=dist.ReduceOp.AVG)
+    # avg_loss = avg_loss.item()
 
-    for param in model.parameters():
-        dist.all_reduce(param.grad, op=dist.ReduceOp.AVG)
+    # for param in model.parameters():
+    #     dist.all_reduce(param.grad, op=dist.ReduceOp.AVG)
 
-    # momentum warmup for Muon
-    frac = min(step / 300, 1)
-    for group in optimizer2.param_groups:
-        group["momentum"] = (1 - frac) * 0.85 + frac * 0.95
-    # step the optimizers and schedulers
-    for opt, sched in zip(optimizers, schedulers):
-        opt.step()
-        sched.step()
-    # null the gradients
-    model.zero_grad(set_to_none=True)
-    # logging
-    approx_time = training_time_ms + 1000 * (time.perf_counter() - t0)
-    print0(f"step:{step+1}/{train_steps} train_time:{approx_time:.0f}ms step_avg:{approx_time/timed_steps:.2f}ms loss(gpu0): {avg_loss:.4f}", console=True)
+    # # momentum warmup for Muon
+    # frac = min(step / 300, 1)
+    # for group in optimizer2.param_groups:
+    #     group["momentum"] = (1 - frac) * 0.85 + frac * 0.95
+    # # step the optimizers and schedulers
+    # for opt, sched in zip(optimizers, schedulers):
+    #     opt.step()
+    #     sched.step()
+    # # null the gradients
+    # model.zero_grad(set_to_none=True)
+    # # logging
+    # approx_time = training_time_ms + 1000 * (time.perf_counter() - t0)
+    # print0(f"step:{step+1}/{train_steps} train_time:{approx_time:.0f}ms step_avg:{approx_time/timed_steps:.2f}ms loss(gpu0): {avg_loss:.4f}", console=True)
 
 print0(f'VALIDATION @ taildropout', console=True)
 print0(f"TailDropout(p={DROPOUT_P}, batch_dim=0) @ MLP + pre-headpost norm", console=True)
