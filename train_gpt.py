@@ -650,23 +650,31 @@ for name, module in model.named_modules():
 # Get marginal importance of layer
 def _eval():
     with torch.no_grad():
+        print0(f"@ 0 | mem: {torch.cuda.memory_allocated() // 1024 // 1024}MB", console=True)        
         val_bs = world_size * args.seq_len
         assert args.val_tokens % val_bs == 0
         val_steps = args.val_tokens // val_bs
+        print0(f"@ 1 | mem: {torch.cuda.memory_allocated() // 1024 // 1024}MB", console=True)        
         val_loader = distributed_data_generator(args.val_files, val_bs, rank, world_size)
+        print0(f"@ 2 | mem: {torch.cuda.memory_allocated() // 1024 // 1024}MB", console=True)        
         val_loss = 0
-        for _ in range(val_steps):
+        for i in range(val_steps):
             x, y = next(val_loader)
-            val_loss += model(x, y, sw_num_blks(window_size))
+            val_loss += model(x, y, sw_num_blks(window_size)) # TODO MEM LEAK
+            print0(f"@ 4 {i}| mem: {torch.cuda.memory_allocated() // 1024 // 1024}MB", console=True)        
         val_loss /= val_steps
+        print0(f"@ 5 | mem: {torch.cuda.memory_allocated() // 1024 // 1024}MB", console=True)        
         del val_loader
         dist.all_reduce(val_loss, op=dist.ReduceOp.AVG)
-        return val_loss.item()
+        torch.cuda.empty_cache()
+        torch.cuda.synchronize()     
+        val_loss = val_loss.item()
+        print0(f"@ 6 | mem: {torch.cuda.memory_allocated() // 1024 // 1024}MB", console=True)        
+        return val_loss
 
-print0("DEBUG SINGLE K", console=True)
+# Change k for every layer
+print0("TEST", console=True)
 for k in k_iterator:
-    for name,layer_info in dropout_modules.items():
-        layer_info['module'].set_k(16)
     val_loss = _eval()
     print0(f"{k:>4d} | {val_loss:.6f} | mem: {torch.cuda.memory_allocated() // 1024 // 1024}MB", console=True)
 
@@ -678,43 +686,7 @@ for k in k_iterator:
     val_loss = _eval()
     print0(f"{k:>4d} | {val_loss:.6f} | mem: {torch.cuda.memory_allocated() // 1024 // 1024}MB", console=True)
 
-for name,layer_info in dropout_modules.items():
-    layer_info['module'].set_k(None)
 model.eval()
-
-################################
-# Change k for every layer
-print0(f"TEST ({window_size})", console=True)
-torch.cuda.synchronize()
-for k in k_iterator:
-    print0(f"@ 1 | mem: {torch.cuda.memory_allocated() // 1024 // 1024}MB", console=True)
-    for name,layer_info in dropout_modules.items():
-        layer_info['module'].set_k(k)
-
-    print0(f"@ 2 | mem: {torch.cuda.memory_allocated() // 1024 // 1024}MB", console=True)
-    val_bs = world_size * args.seq_len
-    assert args.val_tokens % val_bs == 0
-    val_steps = args.val_tokens // val_bs
-    val_loader = distributed_data_generator(args.val_files, val_bs, rank, world_size)
-    val_loss = 0
-    print0(f"@ 3 | mem: {torch.cuda.memory_allocated() // 1024 // 1024}MB", console=True)
-    with torch.no_grad():
-        for _ in range(val_steps):
-            x, y = next(val_loader)
-            print0(f"@ 4 | mem: {torch.cuda.memory_allocated() // 1024 // 1024}MB", console=True)
-            val_loss += model(x, y, sw_num_blks(window_size))
-    print0(f"@ 5 | mem: {torch.cuda.memory_allocated() // 1024 // 1024}MB", console=True)
-    val_loss /= val_steps
-    print0(f"@ 6 | mem: {torch.cuda.memory_allocated() // 1024 // 1024}MB", console=True)
-    del val_loader
-    print0(f"@ 7 | mem: {torch.cuda.memory_allocated() // 1024 // 1024}MB", console=True)
-    dist.all_reduce(val_loss, op=dist.ReduceOp.AVG)
-    val_loss= val_loss.item()
-    print0(f"@ 8 | mem: {torch.cuda.memory_allocated() // 1024 // 1024}MB", console=True)
-    torch.cuda.empty_cache()
-    print0(f"@ 9 | mem: {torch.cuda.memory_allocated() // 1024 // 1024}MB", console=True)
-    print0(f"{k:>4d} | {val_loss:.6f} | mem: {torch.cuda.memory_allocated() // 1024 // 1024}MB", console=True)
-################
 
 print0("Leave-one-out", console=True)
 for name,layer_info in dropout_modules.items():
