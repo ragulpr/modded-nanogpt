@@ -594,24 +594,24 @@ for step in range(train_steps + 1):
         break
 
     # --------------- TRAINING SECTION BEGIN -----------------
-    inputs, targets = next(train_loader)
-    for input_seq, target_seq in zip(inputs.split(args.seq_len), targets.split(args.seq_len)):
-        model(input_seq, target_seq, sw_num_blks(window_size)).backward()
-    for param in model.parameters():
-        dist.all_reduce(param.grad, op=dist.ReduceOp.AVG)
-    # momentum warmup for Muon
-    frac = min(step / 300, 1)
-    for group in optimizer2.param_groups:
-        group["momentum"] = (1 - frac) * 0.85 + frac * 0.95
-    # step the optimizers and schedulers
-    for opt, sched in zip(optimizers, schedulers):
-        opt.step()
-        sched.step()
-    # null the gradients
-    model.zero_grad(set_to_none=True)
-    # logging
-    approx_time = training_time_ms + 1000 * (time.perf_counter() - t0)
-    print0(f"step:{step+1}/{train_steps} train_time:{approx_time:.0f}ms step_avg:{approx_time/timed_steps:.2f}ms", console=True)
+    # inputs, targets = next(train_loader)
+    # for input_seq, target_seq in zip(inputs.split(args.seq_len), targets.split(args.seq_len)):
+    #     model(input_seq, target_seq, sw_num_blks(window_size)).backward()
+    # for param in model.parameters():
+    #     dist.all_reduce(param.grad, op=dist.ReduceOp.AVG)
+    # # momentum warmup for Muon
+    # frac = min(step / 300, 1)
+    # for group in optimizer2.param_groups:
+    #     group["momentum"] = (1 - frac) * 0.85 + frac * 0.95
+    # # step the optimizers and schedulers
+    # for opt, sched in zip(optimizers, schedulers):
+    #     opt.step()
+    #     sched.step()
+    # # null the gradients
+    # model.zero_grad(set_to_none=True)
+    # # logging
+    # approx_time = training_time_ms + 1000 * (time.perf_counter() - t0)
+    # print0(f"step:{step+1}/{train_steps} train_time:{approx_time:.0f}ms step_avg:{approx_time/timed_steps:.2f}ms", console=True)
 
 print0(
     f"peak memory allocated: {torch.cuda.max_memory_allocated() // 1024 // 1024} MiB "
