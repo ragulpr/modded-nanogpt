@@ -640,7 +640,6 @@ for name, module in model.named_modules():
 # calculate the number of steps to take in the val loop.
 # Get marginal importance of layer
 def _eval():               
-    model.eval()
     val_bs = world_size * args.seq_len
     assert args.val_tokens % val_bs == 0
     val_steps = args.val_tokens // val_bs
@@ -666,6 +665,7 @@ with torch.no_grad():
 
 for name,layer_info in dropout_modules.items():
     layer_info['module'].set_k(None)
+model.eval()
 
 print("Leave-one-out")
 with torch.no_grad():
