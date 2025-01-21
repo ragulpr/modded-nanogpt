@@ -468,7 +468,7 @@ class Hyperparameters:
     val_tokens = 10485760 # how many tokens of validation data? it's important to keep this fixed for consistent comparisons
     # optimization
     batch_size = 8*64*1024 # batch size in tokens
-    num_iterations = 10 # number of iterations to run
+    num_iterations = 15 # number of iterations to run
     cooldown_frac = 0.4 # fraction of training spent cooling down the learning rate
     # evaluation and logging
     val_loss_every = 125 # every how many steps to evaluate val loss? 0 for only at the end
@@ -610,8 +610,8 @@ for step in range(train_steps + 1):
         loss.backward()
 
     avg_loss = total_loss / (len(inputs) // args.seq_len)
+    dist.all_reduce(avg_loss, op=dist.ReduceOp.AVG)
     avg_loss = avg_loss.item()
-    # dist.all_reduce(avg_loss, op=dist.ReduceOp.AVG)
 
     for param in model.parameters():
         dist.all_reduce(param.grad, op=dist.ReduceOp.AVG)
