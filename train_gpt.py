@@ -606,7 +606,7 @@ for step in range(train_steps + 1):
     total_loss = 0
     for input_seq, target_seq in zip(inputs.split(args.seq_len), targets.split(args.seq_len)):
         loss = model(input_seq, target_seq, sw_num_blks(window_size))
-        total_loss += loss.item()  # Get loss value before backward()
+        total_loss += loss
         loss.backward()
 
     avg_loss = total_loss / (len(inputs) // args.seq_len)
