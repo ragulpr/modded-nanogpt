@@ -476,7 +476,7 @@ class Hyperparameters:
     seq_len = 64*1024 # FlexAttention sequence length
     save_checkpoint = False
 args = Hyperparameters()
-DROPOUT_P = 0
+DROPOUT_P = 0.01
 
 # torchrun sets these env variables
 rank = int(os.environ["RANK"])
