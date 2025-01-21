@@ -640,11 +640,11 @@ model.eval()
 dropout_modules = {}
 for name, module in model.named_modules():
     if isinstance(module, TailDropout):
-        if module._p>0:
-            dropout_modules[name]={
-                'module':module,
-                'val_losses':{k:0.0 for k in k_iterator}
-                }
+        # if module._p>0:
+        dropout_modules[name]={
+            'module':module,
+            'val_losses':{k:0.0 for k in k_iterator}
+            }
 
 # calculate the number of steps to take in the val loop.
 # Get marginal importance of layer
@@ -679,7 +679,7 @@ model.eval()
 print0("Leave-one-out", console=True)
 with torch.no_grad():
     for name,layer_info in dropout_modules.items():
-        for k in k_iterator:
+        for k in layer_info['val_losses']:
             layer_info['module'].set_k(k)
             layer_info['val_losses'][k] = _eval()
             print0(f"{k:>4d} | {layer_info['val_losses'][k]:.6f} | {name} | mem: {torch.cuda.memory_allocated() // 1024 // 1024}MB", console=True)
