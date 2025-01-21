@@ -570,7 +570,7 @@ def _eval():
     val_loss /= val_steps
     del val_loader
     dist.all_reduce(val_loss, op=dist.ReduceOp.AVG)
-    return val_loss
+    return val_loss.item()
 
 for step in range(train_steps + 1):
     last_step = (step == train_steps)
@@ -593,7 +593,7 @@ for step in range(train_steps + 1):
         model.eval()
         val_loss = _eval()
         mem = f"{torch.cuda.max_memory_allocated() // 1024 // 1024} MiB "
-        print0(f"step:{step}/{train_steps} val_loss:{val_loss:.4f} train_time:{training_time_ms:.0f}ms step_avg:{training_time_ms/(timed_steps-1):.2f}ms mem:{mem}", console=True)
+        print0(f"step:{step: >4d}/{train_steps} val_loss:{val_loss:.4f} train_time:{training_time_ms:.0f}ms step_avg:{training_time_ms/(timed_steps-1):.2f}ms mem:{mem}", console=True)
         model.train()
         # start the clock again
         torch.cuda.synchronize()
@@ -634,7 +634,7 @@ for step in range(train_steps + 1):
     # model.zero_grad(set_to_none=True)
     # # logging
     # approx_time = training_time_ms + 1000 * (time.perf_counter() - t0)
-    # print0(f"step:{step+1}/{train_steps} train_time:{approx_time:.0f}ms step_avg:{approx_time/timed_steps:.2f}ms loss(gpu0): {avg_loss:.4f}", console=True)
+    # print0(f"step:{step+1: >4d}/{train_steps} train_time:{approx_time:.0f}ms step_avg:{approx_time/timed_steps:.2f}ms loss(gpu0): {avg_loss:.4f}", console=True)
 
 print0(f'VALIDATION @ taildropout', console=True)
 print0(f"TailDropout(p={DROPOUT_P}, batch_dim=0) @ MLP + pre-headpost norm", console=True)
