@@ -468,7 +468,7 @@ class Hyperparameters:
     val_tokens = 10485760 # how many tokens of validation data? it's important to keep this fixed for consistent comparisons
     # optimization
     batch_size = 8*64*1024 # batch size in tokens
-    num_iterations = 125 # number of iterations to run
+    num_iterations = 10 # number of iterations to run
     cooldown_frac = 0.4 # fraction of training spent cooling down the learning rate
     # evaluation and logging
     val_loss_every = 125 # every how many steps to evaluate val loss? 0 for only at the end
@@ -603,10 +603,19 @@ for step in range(train_steps + 1):
 
     # --------------- TRAINING SECTION BEGIN -----------------
     inputs, targets = next(train_loader)
+    total_loss = 0
     for input_seq, target_seq in zip(inputs.split(args.seq_len), targets.split(args.seq_len)):
-        model(input_seq, target_seq, sw_num_blks(window_size)).backward()
+        loss = model(input_seq, target_seq, sw_num_blks(window_size))
+        total_loss += loss.item()  # Get loss value before backward()
+        loss.backward()
+
+    avg_loss = total_loss / (len(inputs) // args.seq_len)
+    avg_loss = avg_loss.item()
+    # dist.all_reduce(avg_loss, op=dist.ReduceOp.AVG)
+
     for param in model.parameters():
         dist.all_reduce(param.grad, op=dist.ReduceOp.AVG)
+
     # momentum warmup for Muon
     frac = min(step / 300, 1)
     for group in optimizer2.param_groups:
@@ -619,14 +628,14 @@ for step in range(train_steps + 1):
     model.zero_grad(set_to_none=True)
     # logging
     approx_time = training_time_ms + 1000 * (time.perf_counter() - t0)
-    print0(f"step:{step+1}/{train_steps} train_time:{approx_time:.0f}ms step_avg:{approx_time/timed_steps:.2f}ms", console=True)
+    print0(f"step:{step+1}/{train_steps} train_time:{approx_time:.0f}ms step_avg:{approx_time/timed_steps:.2f}ms loss(gpu0): {avg_loss:.4f}", console=True)
 
 print0(f'VALIDATION @ taildropout', console=True)
-print(f"TailDropout(p={DROPOUT_P}, batch_dim=0) @ MLP + pre-headpost norm")
+print0(f"TailDropout(p={DROPOUT_P}, batch_dim=0) @ MLP + pre-headpost norm", console=True)
 print0(f'peak memory consumption: {torch.cuda.max_memory_allocated() // 1024 // 1024} MiB', console=True)
 print0(f"Current: {torch.cuda.memory_allocated() // 1024 // 1024}MB", console=True)
 # run validation batches
-k_iterator = [0, 1] + list(range(16, 768+1, 16))
+k_iterator = [0, 1] + list(range(16, 768+1, 128))
 model.eval()
 dropout_modules = {}
 for name, module in model.named_modules():
