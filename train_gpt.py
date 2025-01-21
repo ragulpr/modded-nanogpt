@@ -665,7 +665,7 @@ def _eval():
 
 # Change k for every layer
 print0(f"TEST ({window_size})", console=True)
-with torch.no_grad(), torch._dynamo.config.patch({"disable": True}):
+with torch.no_grad():
     torch.cuda.synchronize()
     for k in k_iterator:
         print0(f"@ 1 | mem: {torch.cuda.memory_allocated() // 1024 // 1024}MB", console=True)
