@@ -297,7 +297,7 @@ class MLP(nn.Module):
         # Prob. of no dropout / example / mask
         #  batch_dim = [batch]     => 1-p            => (1-p)^n_layers           ex p=1-(1-0.1)^(1/n_layers)  ~=1e-2
         #  batch_dim = [batch,time]=> (1-p)^seq_len  => (1-p)^(seq_len*n_layers) ex p=1-(1-0.1)^(1/(1024*10)) ~=1e-5
-        self.dropout = TailDropout(p=0.1,batch_dim=0)
+        self.dropout = TailDropout(p=DROPOUT_P,batch_dim=0)
 
     def forward(self, x):
         x = self.c_fc(x)
@@ -352,7 +352,7 @@ class GPT(nn.Module):
         self.skip_weights = nn.Parameter(torch.ones(self.num_decoder_layers))
         # there are only 50257 unique GPT-2 tokens; we extend to nearest multiple of 128 for efficiency.
         # suggested to me by @Grad62304977. this originates from Karpathy's experiments.
-        self.dropout_head = TailDropout(p=0.1, batch_dim=0)
+        self.dropout_head = TailDropout(p=DROPOUT_P, batch_dim=0)
         self.lm_head = CastedLinear(model_dim, next_multiple_of_n(vocab_size, n=128))
         self.lm_head.weight.detach().zero_() # @Grad62304977
 
@@ -468,7 +468,7 @@ class Hyperparameters:
     val_tokens = 10485760 # how many tokens of validation data? it's important to keep this fixed for consistent comparisons
     # optimization
     batch_size = 8*64*1024 # batch size in tokens
-    num_iterations = 1393 # number of iterations to run
+    num_iterations = 125 # number of iterations to run
     cooldown_frac = 0.4 # fraction of training spent cooling down the learning rate
     # evaluation and logging
     val_loss_every = 125 # every how many steps to evaluate val loss? 0 for only at the end
@@ -476,6 +476,7 @@ class Hyperparameters:
     seq_len = 64*1024 # FlexAttention sequence length
     save_checkpoint = False
 args = Hyperparameters()
+DROPOUT_P = 0
 
 # torchrun sets these env variables
 rank = int(os.environ["RANK"])
@@ -621,7 +622,7 @@ for step in range(train_steps + 1):
     print0(f"step:{step+1}/{train_steps} train_time:{approx_time:.0f}ms step_avg:{approx_time/timed_steps:.2f}ms", console=True)
 
 print0(f'VALIDATION @ taildropout', console=True)
-print("TailDropout(p=0.1, batch_dim=0) @ MLP + pre-headpost norm")
+print(f"TailDropout(p={DROPOUT_P}, batch_dim=0) @ MLP + pre-headpost norm")
 print0(f'peak memory consumption: {torch.cuda.max_memory_allocated() // 1024 // 1024} MiB', console=True)
 print0(f"Current: {torch.cuda.memory_allocated() // 1024 // 1024}MB", console=True)
 # run validation batches
