@@ -468,7 +468,7 @@ class Hyperparameters:
     val_tokens = 10485760//8 # how many tokens of validation data? it's important to keep this fixed for consistent comparisons
     # optimization
     batch_size = 1*16*1024 # batch size in tokens
-    num_iterations = 15 # number of iterations to run
+    num_iterations = 5 # number of iterations to run
     cooldown_frac = 0.4 # fraction of training spent cooling down the learning rate
     # evaluation and logging
     val_loss_every = 1 # every how many steps to evaluate val loss? 0 for only at the end
@@ -599,13 +599,13 @@ for step in range(train_steps + 1):
         torch.cuda.synchronize()
         t0 = time.perf_counter()
 
-    if last_step:
-        if master_process and args.save_checkpoint:
-            log = dict(step=step, code=code, model=model.state_dict(), optimizers=[opt.state_dict() for opt in optimizers])
-            os.makedirs(f"logs/{run_id}", exist_ok=True)
-            torch.save(log, f"logs/{run_id}/state_step{step:06d}.pt")
-        # the last step only has the validation loop, so break to avoid training
-        break
+    # if last_step:
+    #     if master_process and args.save_checkpoint:
+    #         log = dict(step=step, code=code, model=model.state_dict(), optimizers=[opt.state_dict() for opt in optimizers])
+    #         os.makedirs(f"logs/{run_id}", exist_ok=True)
+    #         torch.save(log, f"logs/{run_id}/state_step{step:06d}.pt")
+    #     # the last step only has the validation loop, so break to avoid training
+    #     break
 
     # # --------------- TRAINING SECTION BEGIN -----------------
     # inputs, targets = next(train_loader)
