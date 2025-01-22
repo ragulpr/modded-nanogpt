@@ -592,7 +592,7 @@ for step in range(train_steps + 1):
         training_time_ms += 1000 * (time.perf_counter() - t0)
         model.eval()
         val_loss = _eval()
-        mem = f"{torch.cuda.max_memory_allocated() // 1024 // 1024} MiB "
+        mem = f"{torch.cuda.memory_allocated() // 1024 // 1024} MiB "
         print0(f"step:{step: >4d}/{train_steps} val_loss:{val_loss:.4f} train_time:{training_time_ms:.0f}ms step_avg:{training_time_ms/(timed_steps-1):.2f}ms mem:{mem}", console=True)
         model.train()
         # start the clock again
@@ -666,6 +666,7 @@ print0("ALL", console=True)
 for k in k_iterator:
     for name,layer_info in dropout_modules.items():
         layer_info['module'].set_k(k)
+    torch.cuda.synchronize()
     val_loss = _eval()
     print0(f"{k:>4d} | {val_loss:.6f} | mem: {torch.cuda.memory_allocated() // 1024 // 1024}MB", console=True)
 
