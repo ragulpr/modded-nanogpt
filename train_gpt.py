@@ -643,14 +643,6 @@ print0(f"Current: {torch.cuda.memory_allocated() // 1024 // 1024}MB", console=Tr
 # run validation batches
 k_iterator = [0, 1] + list(range(16, 768+1, 128))
 model.eval()
-dropout_modules = {}
-for name, module in model.named_modules():
-    if isinstance(module, TailDropout):
-        # if module._p>0:
-        dropout_modules[name]={
-            'module':module,
-            'val_losses':{k:0.0 for k in k_iterator}
-            }
 
 # calculate the number of steps to take in the val loop.
 # Get marginal importance of layer
@@ -664,8 +656,9 @@ for k in k_iterator:
 # Change k for every layer
 print0("ALL", console=True)
 for k in k_iterator:
-    for name,layer_info in dropout_modules.items():
-        layer_info['module'].set_k(k)
+    for name, module in model.named_modules():
+        if isinstance(module, TailDropout):
+            module.set_k(k)
     torch.cuda.synchronize()
     val_loss = _eval()
     print0(f"{k:>4d} | {val_loss:.6f} | mem: {torch.cuda.memory_allocated() // 1024 // 1024}MB", console=True)
@@ -673,12 +666,14 @@ for k in k_iterator:
 model.eval()
 
 print0("Leave-one-out", console=True)
-for name,layer_info in dropout_modules.items():
-    for k in layer_info['val_losses']:
-        layer_info['module'].set_k(k)
-        layer_info['val_losses'][k] = _eval()
-        print0(f"{k:>4d} | {layer_info['val_losses'][k]:.6f} | {name} | mem: {torch.cuda.memory_allocated() // 1024 // 1024}MB", console=True)
-        layer_info['module'].set_k(None)
+for name, module in model.named_modules():
+    if isinstance(module, TailDropout):
+        for k in k_iterator:
+            module.set_k(k)
+            val_loss = _eval()
+            print0(f"{k:>4d} | {val_loss:.6f} | {name} | mem: {torch.cuda.memory_allocated() // 1024 // 1024}MB", console=True)
+
+        module.set_k(None)
 
 print0(
     f"peak memory allocated: {torch.cuda.max_memory_allocated() // 1024 // 1024} MiB "
