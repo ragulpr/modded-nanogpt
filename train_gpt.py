@@ -474,7 +474,7 @@ class Hyperparameters:
     num_iterations = 2000 # number of iterations to run
     cooldown_frac = 0.4 # fraction of training spent cooling down the learning rate
     # evaluation and logging
-    val_loss_every = 100 # every how many steps to evaluate val loss? 0 for only at the end
+    val_loss_every = 25 # every how many steps to evaluate val loss? 0 for only at the end
     # implementation
     seq_len = 64*1024 # FlexAttention sequence length
     save_checkpoint = False
@@ -525,6 +525,7 @@ def nvidia_smi():
     return subprocess.run(["nvidia-smi"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True).stdout
 print0(nvidia_smi())
 print0("="*100)
+print0(args, console=True)
 
 # load data
 train_loader = distributed_data_generator(args.train_files, args.batch_size, rank, world_size)
@@ -646,7 +647,7 @@ for step in range(train_steps + 1):
     model.zero_grad(set_to_none=True)
     # logging
     approx_time = training_time_ms + 1000 * (time.perf_counter() - t0)
-    print0(f"step:{step+1: >4d}/{train_steps} train_time:{approx_time:.0f}ms step_avg:{approx_time/timed_steps:.2f}ms loss: {avg_loss:9.6f} : val_loss: {val_loss:9.6f}", console=True)
+    print0(f"step:{step+1: >4d}/{train_steps} step_avg:{approx_time/timed_steps:.2f}ms loss: {avg_loss:9.6f} val_loss: {val_loss:9.6f} dropout_p: {DROPOUT_P}", console=True)
 
 torch.cuda.synchronize()
 t0 = time.perf_counter()
@@ -678,7 +679,8 @@ torch._dynamo.config.cache_size_limit = 1000
 # Get marginal gain of k @ for all layers
 torch.cuda.synchronize()
 t0 = time.perf_counter()
-print0(f"ALL ({training_time_ms + 1000 * (time.perf_counter() - t0):.0f})", console=True)
+kind = "k @ all layers"
+print0(f"{kind} ({training_time_ms + 1000 * (time.perf_counter() - t0):.0f})", console=True)
 for k in k_iterator:
     for name, module in model.named_modules():
         if isinstance(module, TailDropout):
@@ -689,7 +691,7 @@ for k in k_iterator:
     
     torch.cuda.synchronize()
     val_loss = _eval()
-    print0(f"{k:>4d} | {val_loss:9.6f} | mem: {torch.cuda.memory_allocated() // 1024 // 1024}MB | k @ all layers", console=True)
+    print0(f"k_eval | {k:>4d} | {val_loss:9.6f} |  {kind} | {DROPOUT_P} | {torch.cuda.memory_allocated() // 1024 // 1024}MB ", console=True)
     
 # Get marginal gain of k @ each layer
 k_iterator = [0, 1, 2, 4, 8, 16, 32, 64, 128] + list(range(256, 768+1, 256))
@@ -703,7 +705,7 @@ for name, module in model.named_modules():
                 k = k*4
             module.set_k(k)
             val_loss = _eval()
-            print0(f"{k:>4d} | {val_loss:9.6f} |  mem: {torch.cuda.memory_allocated() // 1024 // 1024}MB | {name:<{max_name_length}}", console=True)
+            print0(f"k_eval | {k:>4d} | {val_loss:9.6f} |  {name:<{max_name_length}} | {DROPOUT_P} | {torch.cuda.memory_allocated() // 1024 // 1024}MB ", console=True)
 
         module.set_k(None)
 
