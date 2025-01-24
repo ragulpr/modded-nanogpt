@@ -1,5 +1,7 @@
 import os
 import sys
+
+import torch._dynamo.config
 with open(sys.argv[0]) as f:
     code = f.read() # read the code of this file ASAP, for logging
 import uuid
@@ -599,50 +601,60 @@ for step in range(train_steps + 1):
         torch.cuda.synchronize()
         t0 = time.perf_counter()
 
-    # if last_step:
-    #     if master_process and args.save_checkpoint:
-    #         log = dict(step=step, code=code, model=model.state_dict(), optimizers=[opt.state_dict() for opt in optimizers])
-    #         os.makedirs(f"logs/{run_id}", exist_ok=True)
-    #         torch.save(log, f"logs/{run_id}/state_step{step:06d}.pt")
-    #     # the last step only has the validation loop, so break to avoid training
-    #     break
+    if last_step:
+        if master_process and args.save_checkpoint:
+            log = dict(step=step, code=code, model=model.state_dict(), optimizers=[opt.state_dict() for opt in optimizers])
+            os.makedirs(f"logs/{run_id}", exist_ok=True)
+            torch.save(log, f"logs/{run_id}/state_step{step:06d}.pt")
+        # the last step only has the validation loop, so break to avoid training
+        break
 
-    # # --------------- TRAINING SECTION BEGIN -----------------
-    # inputs, targets = next(train_loader)
-    # total_loss = 0
-    # for input_seq, target_seq in zip(inputs.split(args.seq_len), targets.split(args.seq_len)):
-    #     loss = model(input_seq, target_seq, sw_num_blks(window_size))
-    #     total_loss += loss
-    #     loss.backward()
+    # --------------- TRAINING SECTION BEGIN -----------------
+    inputs, targets = next(train_loader)
+    total_loss = 0
+    for input_seq, target_seq in zip(inputs.split(args.seq_len), targets.split(args.seq_len)):
+        loss = model(input_seq, target_seq, sw_num_blks(window_size))
+        total_loss += loss
+        loss.backward()
 
-    # avg_loss = total_loss / (len(inputs) // args.seq_len)
-    # # dist.all_reduce(avg_loss, op=dist.ReduceOp.AVG)
-    # avg_loss = avg_loss.item()
+    avg_loss = total_loss / (len(inputs) // args.seq_len)
+    dist.all_reduce(avg_loss, op=dist.ReduceOp.AVG)
+    avg_loss = avg_loss.item()
 
-    # for param in model.parameters():
-    #     dist.all_reduce(param.grad, op=dist.ReduceOp.AVG)
+    for param in model.parameters():
+        dist.all_reduce(param.grad, op=dist.ReduceOp.AVG)
 
-    # # momentum warmup for Muon
-    # frac = min(step / 300, 1)
-    # for group in optimizer2.param_groups:
-    #     group["momentum"] = (1 - frac) * 0.85 + frac * 0.95
-    # # step the optimizers and schedulers
-    # for opt, sched in zip(optimizers, schedulers):
-    #     opt.step()
-    #     sched.step()
-    # # null the gradients
-    # model.zero_grad(set_to_none=True)
-    # # logging
-    # approx_time = training_time_ms + 1000 * (time.perf_counter() - t0)
-    # print0(f"step:{step+1: >4d}/{train_steps} train_time:{approx_time:.0f}ms step_avg:{approx_time/timed_steps:.2f}ms loss(gpu0): {avg_loss:.4f}", console=True)
+    # momentum warmup for Muon
+    frac = min(step / 300, 1)
+    for group in optimizer2.param_groups:
+        group["momentum"] = (1 - frac) * 0.85 + frac * 0.95
+    # step the optimizers and schedulers
+    for opt, sched in zip(optimizers, schedulers):
+        opt.step()
+        sched.step()
+    # null the gradients
+    model.zero_grad(set_to_none=True)
+    # logging
+    approx_time = training_time_ms + 1000 * (time.perf_counter() - t0)
+    print0(f"step:{step+1: >4d}/{train_steps} train_time:{approx_time:.0f}ms step_avg:{approx_time/timed_steps:.2f}ms loss: {avg_loss:.4f} : val_loss: {val_loss}", console=True)
 
 print0(f'VALIDATION @ taildropout', console=True)
 print0(f"TailDropout(p={DROPOUT_P}, batch_dim=0) @ MLP + pre-headpost norm", console=True)
 print0(f'peak memory consumption: {torch.cuda.max_memory_allocated() // 1024 // 1024} MiB', console=True)
 print0(f"Current: {torch.cuda.memory_allocated() // 1024 // 1024}MB", console=True)
 # run validation batches
-k_iterator = [0, 1] + list(range(16, 768+1, 128))
+k_iterator = [0, 1, 2, 4, 8, 16, 32] + list(range(64, 768+1, 64))
 model.eval()
+
+torch.compiler.reset()
+torch._dynamo.config.cache_size_limit = 1000
+# torch._logging.set_logs(
+    # dynamo=logging.DEBUG,
+    # recompiles=True,
+    # recompiles_verbose=True,
+    # perf_hints=True
+# )
+
 
 # calculate the number of steps to take in the val loop.
 # Get marginal importance of layer
@@ -651,7 +663,7 @@ model.eval()
 print0("TEST", console=True)
 for k in k_iterator:
     val_loss = _eval()
-    print0(f"{k:>4d} | {val_loss:.6f} | mem: {torch.cuda.memory_allocated() // 1024 // 1024}MB", console=True)
+    print0(f"{k:>4d} | {val_loss:.6f} | mem: {torch.cuda.memory_allocated() // 1024 // 1024}MB | NONE", console=True)
 
 # Change k for every layer
 print0("ALL", console=True)
@@ -661,17 +673,18 @@ for k in k_iterator:
             module.set_k(k)
     torch.cuda.synchronize()
     val_loss = _eval()
-    print0(f"{k:>4d} | {val_loss:.6f} | mem: {torch.cuda.memory_allocated() // 1024 // 1024}MB", console=True)
+    print0(f"{k:>4d} | {val_loss:.6f} | mem: {torch.cuda.memory_allocated() // 1024 // 1024}MB | k @ all layers", console=True)
 
 model.eval()
 
 print0("Leave-one-out", console=True)
+max_name_length = max(len(name) for name, _ in model.named_modules())
 for name, module in model.named_modules():
     if isinstance(module, TailDropout):
         for k in k_iterator:
             module.set_k(k)
             val_loss = _eval()
-            print0(f"{k:>4d} | {val_loss:.6f} | {name} | mem: {torch.cuda.memory_allocated() // 1024 // 1024}MB", console=True)
+            print0(f"{k:>4d} | {val_loss:.6f} |  mem: {torch.cuda.memory_allocated() // 1024 // 1024}MB | {name:<{max_name_length}}", console=True)
 
         module.set_k(None)
 
