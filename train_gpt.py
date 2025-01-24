@@ -467,13 +467,13 @@ class Hyperparameters:
     # data
     train_files = "data/fineweb10B/fineweb_train_*.bin" # input .bin to train on
     val_files = "data/fineweb10B/fineweb_val_*.bin" # input .bin to eval validation loss on
-    val_tokens = 10485760//8 # how many tokens of validation data? it's important to keep this fixed for consistent comparisons
+    val_tokens = 10485760 # how many tokens of validation data? it's important to keep this fixed for consistent comparisons
     # optimization
-    batch_size = 1*16*1024 # batch size in tokens
-    num_iterations = 5 # number of iterations to run
+    batch_size = 8*64*1024 # batch size in tokens
+    num_iterations = 2000 # number of iterations to run
     cooldown_frac = 0.4 # fraction of training spent cooling down the learning rate
     # evaluation and logging
-    val_loss_every = 1 # every how many steps to evaluate val loss? 0 for only at the end
+    val_loss_every = 100 # every how many steps to evaluate val loss? 0 for only at the end
     # implementation
     seq_len = 64*1024 # FlexAttention sequence length
     save_checkpoint = False
@@ -595,7 +595,7 @@ for step in range(train_steps + 1):
         model.eval()
         val_loss = _eval()
         mem = f"{torch.cuda.memory_allocated() // 1024 // 1024} MiB "
-        print0(f"step:{step: >4d}/{train_steps} val_loss:{val_loss:.4f} train_time:{training_time_ms:.0f}ms step_avg:{training_time_ms/(timed_steps-1):.2f}ms mem:{mem}", console=True)
+        # print0(f"step:{step: >4d}/{train_steps} val_loss:{val_loss:.4f} train_time:{training_time_ms:.0f}ms step_avg:{training_time_ms/(timed_steps-1):.2f}ms mem:{mem}", console=True)
         model.train()
         # start the clock again
         torch.cuda.synchronize()
@@ -636,14 +636,16 @@ for step in range(train_steps + 1):
     model.zero_grad(set_to_none=True)
     # logging
     approx_time = training_time_ms + 1000 * (time.perf_counter() - t0)
-    print0(f"step:{step+1: >4d}/{train_steps} train_time:{approx_time:.0f}ms step_avg:{approx_time/timed_steps:.2f}ms loss: {avg_loss:.4f} : val_loss: {val_loss}", console=True)
+    print0(f"step:{step+1: >4d}/{train_steps} train_time:{approx_time:.0f}ms step_avg:{approx_time/timed_steps:.2f}ms loss: {avg_loss:9.6f} : val_loss: {val_loss:9.6f}", console=True)
 
-print0(f'VALIDATION @ taildropout', console=True)
+torch.cuda.synchronize()
+t0 = time.perf_counter()
+print0(f'VALIDATION @ taildropout {training_time_ms + 1000 * (time.perf_counter() - t0):.0f}', console=True)
 print0(f"TailDropout(p={DROPOUT_P}, batch_dim=0) @ MLP + pre-headpost norm", console=True)
 print0(f'peak memory consumption: {torch.cuda.max_memory_allocated() // 1024 // 1024} MiB', console=True)
 print0(f"Current: {torch.cuda.memory_allocated() // 1024 // 1024}MB", console=True)
-# run validation batches
-k_iterator = [0, 1, 2, 4, 8, 16, 32] + list(range(64, 768+1, 64))
+
+k_iterator = [0, 1, 2, 4, 8, 16] + list(range(32, 768+1, 32))
 model.eval()
 
 torch.compiler.reset()
@@ -655,39 +657,39 @@ torch._dynamo.config.cache_size_limit = 1000
     # perf_hints=True
 # )
 
+# # Change k for every layer
+# print0(f"TEST ({training_time_ms + 1000 * (time.perf_counter() - t0):.0f})", console=True)
+# for k in k_iterator:
+#     val_loss = _eval()
+#     print0(f"{k:>4d} | {val_loss:.6f} | mem: {torch.cuda.memory_allocated() // 1024 // 1024}MB | NONE", console=True)
 
-# calculate the number of steps to take in the val loop.
-# Get marginal importance of layer
-
-# Change k for every layer
-print0("TEST", console=True)
-for k in k_iterator:
-    val_loss = _eval()
-    print0(f"{k:>4d} | {val_loss:.6f} | mem: {torch.cuda.memory_allocated() // 1024 // 1024}MB | NONE", console=True)
-
-# Change k for every layer
-print0("ALL", console=True)
+# Get marginal gain of k @ for all layers
+torch.cuda.synchronize()
+t0 = time.perf_counter()
+print0(f"ALL ({training_time_ms + 1000 * (time.perf_counter() - t0):.0f})", console=True)
 for k in k_iterator:
     for name, module in model.named_modules():
         if isinstance(module, TailDropout):
             module.set_k(k)
     torch.cuda.synchronize()
     val_loss = _eval()
-    print0(f"{k:>4d} | {val_loss:.6f} | mem: {torch.cuda.memory_allocated() // 1024 // 1024}MB | k @ all layers", console=True)
-
+    print0(f"{k:>4d} | {val_loss:9.6f} | mem: {torch.cuda.memory_allocated() // 1024 // 1024}MB | k @ all layers", console=True)
+    
+# Get marginal gain of k @ each layer
+k_iterator = [0, 1, 2, 4, 8, 16, 32, 64] + list(range(128, 768+1, 128))
 model.eval()
-
-print0("Leave-one-out", console=True)
+print0(f"Leave-one-out ({training_time_ms + 1000 * (time.perf_counter() - t0):.0f})", console=True)
 max_name_length = max(len(name) for name, _ in model.named_modules())
 for name, module in model.named_modules():
     if isinstance(module, TailDropout):
         for k in k_iterator:
             module.set_k(k)
             val_loss = _eval()
-            print0(f"{k:>4d} | {val_loss:.6f} |  mem: {torch.cuda.memory_allocated() // 1024 // 1024}MB | {name:<{max_name_length}}", console=True)
+            print0(f"{k:>4d} | {val_loss:9.6f} |  mem: {torch.cuda.memory_allocated() // 1024 // 1024}MB | {name:<{max_name_length}}", console=True)
 
         module.set_k(None)
 
+print0(f"Done ({training_time_ms + 1000 * (time.perf_counter() - t0):.0f})", console=True)
 print0(
     f"peak memory allocated: {torch.cuda.max_memory_allocated() // 1024 // 1024} MiB "
     f"reserved: {torch.cuda.max_memory_reserved() // 1024 // 1024} MiB",
