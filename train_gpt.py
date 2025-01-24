@@ -478,7 +478,7 @@ class Hyperparameters:
     seq_len = 64*1024 # FlexAttention sequence length
     save_checkpoint = False
 args = Hyperparameters()
-DROPOUT_P = 0.01
+DROPOUT_P = 0
 
 # torchrun sets these env variables
 rank = int(os.environ["RANK"])
@@ -648,7 +648,7 @@ print0(f"Current: {torch.cuda.memory_allocated() // 1024 // 1024}MB", console=Tr
 k_iterator = [0, 1, 2, 4, 8, 16] + list(range(32, 768+1, 32))
 model.eval()
 
-torch.compiler.reset()
+# torch.compiler.reset()
 torch._dynamo.config.cache_size_limit = 1000
 # torch._logging.set_logs(
     # dynamo=logging.DEBUG,
