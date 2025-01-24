@@ -567,9 +567,9 @@ def _eval():
         for _ in range(val_steps):
             x, y = next(val_loader)
             val_loss += model(x, y, sw_num_blks(window_size))
-    val_loss /= val_steps
+        val_loss /= val_steps
+        dist.all_reduce(val_loss, op=dist.ReduceOp.AVG)
     del val_loader
-    dist.all_reduce(val_loss, op=dist.ReduceOp.AVG)
     return val_loss.item()
 
 for step in range(train_steps + 1):
