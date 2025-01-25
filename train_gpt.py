@@ -19,7 +19,11 @@ import torch.distributed as dist
 # use of FlexAttention contributed by @KoszarskyB
 from torch.nn.attention.flex_attention import BlockMask, flex_attention
 torch._inductor.config.coordinate_descent_tuning = False # turn this off for a faster compile time (but slightly slower run)
-from torch import jit
+from taildropout import TailDropout
+
+torch.cuda.manual_seed_all(0)
+torch.backends.cudnn.deterministic = True
+torch.backends.cudnn.benchmark = False
 
 # -----------------------------------------------------------------------------
 # Custom operators : FP8 matmul for lm_head by @YouJiacheng
@@ -106,7 +110,6 @@ def lm_head_fp8(x: Tensor, w: Tensor) -> Tensor:
     _x = x.flatten(0, -2)
     out: Tensor = torch.ops.nanogpt.mm(_x, w, x_s=2.0, w_s=32.0, grad_s=2.0**29)[0]
     return out.reshape(*x.shape[:-1], -1)
-from taildropout import TailDropout
 
 # -----------------------------------------------------------------------------
 # Muon optimizer
@@ -270,6 +273,7 @@ class CausalSelfAttention(nn.Module):
         self.qkv_w = nn.Parameter(torch.empty(3, dim, dim).uniform_(-bound, bound))
         self.lambdas = nn.Parameter(torch.tensor([0.5, 0.5]))
         self.rotary = Rotary(dim // num_heads) # dim // num_heads = head_dim
+        self.dropout_proj = TailDropout(p=DROPOUT_P,batch_dim=0)
         self.c_proj = CastedLinear(dim, dim)
         self.c_proj.weight.detach().zero_() # zero init suggested by @Grad62304977
         # scale the attention logits by given constant, instead of the default head_dim**-0.5, by @leloykun
@@ -288,6 +292,8 @@ class CausalSelfAttention(nn.Module):
         q, k = self.rotary(q), self.rotary(k)
         y = flex_attention(q.transpose(1, 2), k.transpose(1, 2), v.transpose(1, 2), block_mask=block_mask, scale=self.attn_scale)
         y = y.transpose(1, 2).contiguous().view_as(x) # re-assemble all head outputs side by side
+
+        y = self.dropout_proj(y) # Fun because [0,1,..,first head,..,second_head,...] so induce importance order over value dim & heads
         y = self.c_proj(y)
         return y
 
@@ -300,12 +306,12 @@ class MLP(nn.Module):
         # Prob. of no dropout / example / mask
         #  batch_dim = [batch]     => 1-p            => (1-p)^n_layers           ex p=1-(1-0.1)^(1/n_layers)  ~=1e-2
         #  batch_dim = [batch,time]=> (1-p)^seq_len  => (1-p)^(seq_len*n_layers) ex p=1-(1-0.1)^(1/(1024*10)) ~=1e-5
-        self.dropout = TailDropout(p=DROPOUT_P,batch_dim=0)
+        # self.dropout = TailDropout(p=DROPOUT_P,batch_dim=0)
 
     def forward(self, x):
         x = self.c_fc(x)
         x = F.relu(x).square() # https://arxiv.org/abs/2109.08668v2; ~1-2% better than GELU; suggested by @SKYLINEZ007 and @Grad62304977
-        x = self.dropout(x)
+        # x = self.dropout(x)
         x = self.c_proj(x)
         return x
 
@@ -355,7 +361,7 @@ class GPT(nn.Module):
         self.skip_weights = nn.Parameter(torch.ones(self.num_decoder_layers))
         # there are only 50257 unique GPT-2 tokens; we extend to nearest multiple of 128 for efficiency.
         # suggested to me by @Grad62304977. this originates from Karpathy's experiments.
-        self.dropout_head = TailDropout(p=DROPOUT_P, batch_dim=0)
+        # self.dropout_head = TailDropout(p=DROPOUT_P, batch_dim=0)
         self.lm_head = CastedLinear(model_dim, next_multiple_of_n(vocab_size, n=128))
         self.lm_head.weight.detach().zero_() # @Grad62304977
 
@@ -423,7 +429,7 @@ class GPT(nn.Module):
             x = x + self.skip_weights[i] * skip_connections.pop()
             x = self.blocks[self.num_encoder_layers + i](x, ve_dec[i], x0, block_masks[i])
         x = norm(x)
-        x = self.dropout_head(x)
+        # x = self.dropout_head(x)
         logits = lm_head_fp8(x, self.lm_head.weight) if self.training else self.lm_head(x)
         # @Grad62304977 added tanh softcapping following Gemma 2 paper, @KoszarskyB reduced it from 30 to 15, @YouJiacheng shifted it by +15 (2*sigmoid(2*x)=tanh(x)+1)
         logits = 30 * torch.sigmoid(logits.float() / 7.5)
