@@ -1,4 +1,3 @@
-import itertools
 import os
 import sys
 
@@ -307,12 +306,12 @@ class MLP(nn.Module):
         # Prob. of no dropout / example / mask
         #  batch_dim = [batch]     => 1-p            => (1-p)^n_layers           ex p=1-(1-0.1)^(1/n_layers)  ~=1e-2
         #  batch_dim = [batch,time]=> (1-p)^seq_len  => (1-p)^(seq_len*n_layers) ex p=1-(1-0.1)^(1/(1024*10)) ~=1e-5
-        self.dropout = TailDropout(p=DROPOUT_P,batch_dim=0)
+        # self.dropout = TailDropout(p=DROPOUT_P,batch_dim=0)
 
     def forward(self, x):
         x = self.c_fc(x)
         x = F.relu(x).square() # https://arxiv.org/abs/2109.08668v2; ~1-2% better than GELU; suggested by @SKYLINEZ007 and @Grad62304977
-        x = self.dropout(x)
+        # x = self.dropout(x)
         x = self.c_proj(x)
         return x
 
@@ -362,7 +361,7 @@ class GPT(nn.Module):
         self.skip_weights = nn.Parameter(torch.ones(self.num_decoder_layers))
         # there are only 50257 unique GPT-2 tokens; we extend to nearest multiple of 128 for efficiency.
         # suggested to me by @Grad62304977. this originates from Karpathy's experiments.
-        self.dropout_head = TailDropout(p=DROPOUT_P, batch_dim=0)
+        # self.dropout_head = TailDropout(p=DROPOUT_P, batch_dim=0)
         self.lm_head = CastedLinear(model_dim, next_multiple_of_n(vocab_size, n=128))
         self.lm_head.weight.detach().zero_() # @Grad62304977
 
@@ -429,8 +428,8 @@ class GPT(nn.Module):
         for i in range(self.num_decoder_layers):
             x = x + self.skip_weights[i] * skip_connections.pop()
             x = self.blocks[self.num_encoder_layers + i](x, ve_dec[i], x0, block_masks[i])
-        x = self.dropout_head(x)
         x = norm(x)
+        # x = self.dropout_head(x)
         logits = lm_head_fp8(x, self.lm_head.weight) if self.training else self.lm_head(x)
         # @Grad62304977 added tanh softcapping following Gemma 2 paper, @KoszarskyB reduced it from 30 to 15, @YouJiacheng shifted it by +15 (2*sigmoid(2*x)=tanh(x)+1)
         logits = 30 * torch.sigmoid(logits.float() / 7.5)
@@ -456,7 +455,7 @@ def distributed_data_generator(filename_pattern: str, batch_size: int, rank : in
     files = sorted(Path.cwd().glob(filename_pattern))
     assert batch_size % world_size == 0
     local_batch_size = batch_size // world_size
-    file_iter = itertools.cycle(files) # use itertools.cycle(files) instead if you want to do multi-epoch training
+    file_iter = iter(files) # use itertools.cycle(files) instead if you want to do multi-epoch training
     tokens, pos = _load_data_shard(next(file_iter)), 0
     while True:
         if pos + batch_size + 1 >= len(tokens):
@@ -473,12 +472,12 @@ def distributed_data_generator(filename_pattern: str, batch_size: int, rank : in
 @dataclass
 class Hyperparameters:
     # data
-    train_files = "data/fineweb10B/fineweb_train_000001.bin" # input .bin to train on
-    val_files = "data/fineweb10B/fineweb_train_000001.bin" # input .bin to eval validation loss on
+    train_files = "data/fineweb10B/fineweb_train_*.bin" # input .bin to train on
+    val_files = "data/fineweb10B/fineweb_val_*.bin" # input .bin to eval validation loss on
     val_tokens = 10485760 # how many tokens of validation data? it's important to keep this fixed for consistent comparisons
     # optimization
     batch_size = 8*64*1024 # batch size in tokens
-    num_iterations = 8000 # number of iterations to run
+    num_iterations = 2000 # number of iterations to run
     cooldown_frac = 0.4 # fraction of training spent cooling down the learning rate
     # evaluation and logging
     val_loss_every = 25 # every how many steps to evaluate val loss? 0 for only at the end
@@ -654,7 +653,7 @@ for step in range(train_steps + 1):
     model.zero_grad(set_to_none=True)
     # logging
     approx_time = training_time_ms + 1000 * (time.perf_counter() - t0)
-    print0(f"step:{step+1: >4d}/{train_steps} step_avg:{approx_time/timed_steps:.2f}ms loss: {avg_loss:9.6f} val_loss: {val_loss:9.6f} dropout_p: {DROPOUT_P} | overfit", console=True)
+    print0(f"step:{step+1: >4d}/{train_steps} step_avg:{approx_time/timed_steps:.2f}ms loss: {avg_loss:9.6f} val_loss: {val_loss:9.6f} dropout_p: {DROPOUT_P}", console=True)
 
 torch.cuda.synchronize()
 t0 = time.perf_counter()
@@ -698,23 +697,23 @@ for k in k_iterator:
     
     torch.cuda.synchronize()
     val_loss = _eval()
-    print0(f"k_eval | {k:>4d} | {val_loss:9.6f} |  {kind} | {DROPOUT_P} | {torch.cuda.memory_allocated() // 1024 // 1024}MB | overfit", console=True)
+    print0(f"k_eval | {k:>4d} | {val_loss:9.6f} |  {kind} | {DROPOUT_P} | {torch.cuda.memory_allocated() // 1024 // 1024}MB ", console=True)
     
 # Get marginal gain of k @ each layer
-# k_iterator = [0, 1, 2, 4, 8, 16, 32, 64, 128] + list(range(256, 768+1, 256))
-# model.eval()
-# print0(f"Leave-one-out ({training_time_ms + 1000 * (time.perf_counter() - t0):.0f})", console=True)
-# max_name_length = max(len(name) for name, _ in model.named_modules())
-# for name, module in model.named_modules():
-#     if isinstance(module, TailDropout):
-#         for k in k_iterator:
-#             if 'mlp' in name:
-#                 k = k*4
-#             module.set_k(k)
-#             val_loss = _eval()
-#             print0(f"k_eval | {k:>4d} | {val_loss:9.6f} |  {name:<{max_name_length}} | {DROPOUT_P} | {torch.cuda.memory_allocated() // 1024 // 1024}MB | overfit", console=True)
+k_iterator = [0, 1, 2, 4, 8, 16, 32, 64, 128] + list(range(256, 768+1, 256))
+model.eval()
+print0(f"Leave-one-out ({training_time_ms + 1000 * (time.perf_counter() - t0):.0f})", console=True)
+max_name_length = max(len(name) for name, _ in model.named_modules())
+for name, module in model.named_modules():
+    if isinstance(module, TailDropout):
+        for k in k_iterator:
+            if 'mlp' in name:
+                k = k*4
+            module.set_k(k)
+            val_loss = _eval()
+            print0(f"k_eval | {k:>4d} | {val_loss:9.6f} |  {name:<{max_name_length}} | {DROPOUT_P} | {torch.cuda.memory_allocated() // 1024 // 1024}MB ", console=True)
 
-#         module.set_k(None)
+        module.set_k(None)
 
 print0(f"Done ({training_time_ms + 1000 * (time.perf_counter() - t0):.0f})", console=True)
 print0(
