@@ -262,19 +262,19 @@ class Rotary(nn.Module):
         return torch.cat((y1, y2), 3).type_as(x_BTHD)
 
 class CausalSelfAttention(nn.Module):
-    def __init__(self, dim: int, num_heads: int, layer_idx: int):
+    def __init__(self, dim: int, num_heads: int, layer_idx: int, head_dim=128):
         super().__init__()
-        assert dim % num_heads == 0
         self.num_heads = num_heads
+        self.head_dim = head_dim
+        hdim = num_heads * head_dim
         std = 0.5 * (dim ** -0.5)
         bound = (3 ** 0.5) * std # improved init scale by @YouJiacheng
         # merged QKV weights: suggested by many, implemented by @fernbear.bsky.social, and further improved by @YouJiacheng
         # https://x.com/hi_tysam/status/1879699187107033311
-        self.qkv_w = nn.Parameter(torch.empty(3, dim, dim).uniform_(-bound, bound))
+        self.qkv_w = nn.Parameter(torch.empty(3, hdim, dim).uniform_(-bound, bound))
         self.lambdas = nn.Parameter(torch.tensor([0.5, 0.5]))
-        self.rotary = Rotary(dim // num_heads) # dim // num_heads = head_dim
-        self.dropout_proj = TailDropout(p=DROPOUT_P,batch_dim=0)
-        self.c_proj = CastedLinear(dim, dim)
+        self.rotary = Rotary(head_dim)
+        self.c_proj = CastedLinear(hdim, dim)
         self.c_proj.weight.detach().zero_() # zero init suggested by @Grad62304977
         # scale the attention logits by given constant, instead of the default head_dim**-0.5, by @leloykun
         # inspired by learnable scalars used by @brendanh0gan https://x.com/hi_tysam/status/1879693583898591283
@@ -283,25 +283,24 @@ class CausalSelfAttention(nn.Module):
     def forward(self, x: Tensor, ve: Tensor | None, block_mask: BlockMask):
         B, T = x.size(0), x.size(1) # batch size, sequence length
         assert B == 1, "Must use batch size = 1 for FlexAttention"
-        q, k, v = F.linear(x, self.qkv_w.flatten(end_dim=1).type_as(x)).view(B, T, 3*self.num_heads, -1).chunk(3, dim=-2)
+        q, k, v = F.linear(x, self.qkv_w.flatten(end_dim=1).type_as(x)).view(B, T, 3 * self.num_heads, self.head_dim).chunk(3, dim=-2)
+        q, k = norm(q), norm(k) # QK norm @Grad62304977
+        q, k = self.rotary(q), self.rotary(k)
         if ve is not None:
             v = self.lambdas[0] * v + self.lambdas[1] * ve.view_as(v) # @KoszarskyB & @Grad62304977
         else: # skip mid-layers token value embeddings by @YouJiacheng
             v = self.lambdas[0] * v
-        q, k = norm(q), norm(k) # QK norm @Grad62304977
-        q, k = self.rotary(q), self.rotary(k)
-        y = flex_attention(q.transpose(1, 2), k.transpose(1, 2), v.transpose(1, 2), block_mask=block_mask, scale=self.attn_scale)
-        y = y.transpose(1, 2).contiguous().view_as(x) # re-assemble all head outputs side by side
-
-        y = self.dropout_proj(y) # Fun because [0,1,..,first head,..,second_head,...] so induce importance order over value dim & heads
+        y = flex_attention(q.transpose(1, 2), k.transpose(1, 2), v.transpose(1, 2), block_mask=block_mask, scale=self.attn_scale).transpose(1, 2)
+        y = y.contiguous().view(B, T, self.num_heads * self.head_dim) # re-assemble all head outputs side by side
         y = self.c_proj(y)
         return y
 
 class MLP(nn.Module):
-    def __init__(self, dim):
+    def __init__(self, dim: int):
         super().__init__()
-        self.c_fc = CastedLinear(dim, 4 * dim)
-        self.c_proj = CastedLinear(4 * dim, dim)
+        hdim = 4 * dim
+        self.c_fc = CastedLinear(dim, hdim)
+        self.c_proj = CastedLinear(hdim, dim)
         self.c_proj.weight.detach().zero_() # zero init suggested by @Grad62304977
         # Prob. of no dropout / example / mask
         #  batch_dim = [batch]     => 1-p            => (1-p)^n_layers           ex p=1-(1-0.1)^(1/n_layers)  ~=1e-2
@@ -316,11 +315,11 @@ class MLP(nn.Module):
         return x
 
 class Block(nn.Module):
-    def __init__(self, model_dim: int, num_heads: int, layer_idx: int):
+    def __init__(self, dim: int, num_heads: int, layer_idx: int):
         super().__init__()
         # skip attention of blocks.7 (the 8th layer) by @YouJiacheng
-        self.attn = CausalSelfAttention(model_dim, num_heads, layer_idx) if layer_idx != 7 else None
-        self.mlp = MLP(model_dim)
+        self.attn = CausalSelfAttention(dim, num_heads, layer_idx) if layer_idx != 7 else None
+        self.mlp = MLP(dim)
         self.lambdas = nn.Parameter(torch.tensor([1., 0.]))
 
     def forward(self, x, ve, x0, block_mask):
@@ -365,14 +364,9 @@ class GPT(nn.Module):
         self.lm_head = CastedLinear(model_dim, next_multiple_of_n(vocab_size, n=128))
         self.lm_head.weight.detach().zero_() # @Grad62304977
 
-    def forward(self, input_seq: Tensor, target_seq: Tensor, sliding_window_num_blocks: Tensor):
+    def create_block_masks(self, input_seq: Tensor, sliding_window_num_blocks: Tensor):
         BLOCK_SIZE = 128
-        assert input_seq.ndim == 1
-        assert len(input_seq) % BLOCK_SIZE == 0
-        NUM_BLOCKS = len(input_seq) // BLOCK_SIZE
         docs = (input_seq == 50256).cumsum(0)
-        docs_low = docs.view(-1, BLOCK_SIZE)[:, 0].contiguous()
-        docs_high = docs.view(-1, BLOCK_SIZE)[:, -1].contiguous()
 
         def document_causal(b, h, q_idx, kv_idx):
             causal_mask = q_idx >= kv_idx
@@ -385,30 +379,35 @@ class GPT(nn.Module):
             return num_blocks[None, None].contiguous(), indices[None, None].contiguous()
 
         # manual block mask creation by @YouJiacheng
-        def create_doc_swc_block_masks(sliding_window_num_blocks: Tensor):
-            kv_idx = block_idx = torch.arange(NUM_BLOCKS, dtype=torch.int32, device="cuda")
-            q_idx = block_idx[:, None]
-            causal_bm = q_idx >= kv_idx
-            causal_full_bm = q_idx > kv_idx
-            document_bm = (docs_low[:, None] <= docs_high) & (docs_low <= docs_high[:, None])
-            document_full_bm = (docs_low[:, None] == docs_high) & (docs_low == docs_high[:, None])
-            nonzero_bm = causal_bm & document_bm
-            full_bm  = causal_full_bm & document_full_bm
-            kv_num_blocks, kv_indices = dense_to_ordered(nonzero_bm & ~full_bm)
-            full_kv_num_blocks, full_kv_indices = dense_to_ordered(full_bm)
-            def build_bm(sw_num_blocks: Tensor) -> BlockMask:
-                return BlockMask.from_kv_blocks(
-                    torch.clamp_max(kv_num_blocks, torch.clamp_min(sw_num_blocks - full_kv_num_blocks, 1)),
-                    kv_indices,
-                    torch.clamp_max(full_kv_num_blocks, sw_num_blocks - 1),
-                    full_kv_indices,
-                    BLOCK_SIZE=BLOCK_SIZE,
-                    mask_mod=document_causal,
-                )
-            return build_bm(sliding_window_num_blocks), build_bm(sliding_window_num_blocks // 2)
-
+        assert len(input_seq) % BLOCK_SIZE == 0
+        NUM_BLOCKS = len(input_seq) // BLOCK_SIZE
+        block_idx = torch.arange(NUM_BLOCKS, dtype=torch.int32, device="cuda")
+        any_causal_bm = block_idx[:, None] >= block_idx
+        all_causal_bm = block_idx[:, None] > block_idx
+        docs_low = docs.view(-1, BLOCK_SIZE)[:, 0].contiguous()
+        docs_high = docs.view(-1, BLOCK_SIZE)[:, -1].contiguous()
+        any_document_bm = (docs_low[:, None] <= docs_high) & (docs_high[:, None] >= docs_low)
+        all_document_bm = (docs_low[:, None] == docs_high) & (docs_high[:, None] == docs_low)
+        any_bm = any_causal_bm & any_document_bm
+        all_bm = all_causal_bm & all_document_bm
+        partial_kv_num_blocks, partial_kv_indices = dense_to_ordered(any_bm & ~all_bm)
+        full_kv_num_blocks, full_kv_indices = dense_to_ordered(all_bm)
+        def build_bm(sw_num_blocks: Tensor) -> BlockMask:
+            return BlockMask.from_kv_blocks(
+                torch.clamp_max(partial_kv_num_blocks, torch.clamp_min(sw_num_blocks - full_kv_num_blocks, 1)),
+                partial_kv_indices,
+                torch.clamp_max(full_kv_num_blocks, sw_num_blocks - 1),
+                full_kv_indices,
+                BLOCK_SIZE=BLOCK_SIZE,
+                mask_mod=document_causal,
+            )
         # Long-short SWA block masks by @leloykun & @YouJiacheng, adapated from suggestion by @Grad62304977, following Gemma 2 paper
-        long_bm, short_bm = create_doc_swc_block_masks(sliding_window_num_blocks)
+        return build_bm(sliding_window_num_blocks), build_bm(sliding_window_num_blocks // 2)
+
+    def forward(self, input_seq: Tensor, target_seq: Tensor, sliding_window_num_blocks: Tensor):
+        assert input_seq.ndim == 1
+
+        long_bm, short_bm = self.create_block_masks(input_seq, sliding_window_num_blocks)
 
         x = x0 = norm(self.embed(input_seq)[None]) # use of norm here by @Grad62304977
         ve = self.value_embeds(input_seq)
@@ -516,9 +515,9 @@ if master_process:
 def print0(s, console=False):
     if master_process:
         with open(logfile, "a") as f:
-             if console:
-                 print(s)
-             print(s, file=f)
+            if console:
+                print(s)
+            print(s, file=f)
 
 # begin by printing this file (the Python code)
 print0(code)
@@ -544,8 +543,8 @@ for param in model.parameters():
     dist.broadcast(param.detach(), 0)
 
 # collect the parameters to optimize
-hidden_matrix_params = [p for p in model.blocks.parameters() if p.ndim >= 2]
-embed_params = [model.embed.weight, *model.value_embeds.parameters()]
+hidden_matrix_params = [p for n, p in model.blocks.named_parameters() if p.ndim >= 2 and "embed" not in n]
+embed_params = [p for n, p in model.named_parameters() if "embed" in n]
 scalar_params = [p for p in model.parameters() if p.ndim < 2]
 head_params = [model.lm_head.weight]
 
@@ -553,13 +552,13 @@ head_params = [model.lm_head.weight]
 adam_params = [dict(params=head_params, lr=0.008), dict(params=embed_params, lr=0.6), dict(params=scalar_params, lr=0.04)]
 # small adam epsilon by @YouJiacheng. this is an alternate method of fixing the world_size dependence
 # discovered by @fernbear.bsky.social https://x.com/hi_tysam/status/1879692937589875094
-optimizer1 = torch.optim.Adam(adam_params, betas=(0.8, 0.95), fused=True, eps=1e-10)
+optimizer1 = torch.optim.Adam(adam_params, betas=(0.8, 0.95), eps=1e-10, fused=True)
 optimizer2 = Muon(hidden_matrix_params, lr=0.05, momentum=0.95, rank=rank, world_size=world_size)
 optimizers = [optimizer1, optimizer2]
 
 # learning rate schedule: stable then decay
-def get_lr(it: int):
-    t = 1 - it / args.num_iterations # time remaining in training
+def get_lr(step: int):
+    t = 1 - step / args.num_iterations # time remaining in training
     assert 1 >= t >= 0
     w = min(t / args.cooldown_frac, 1.0) # 1 -> 0
     return w * 1.0 + (1 - w) * 0.1
@@ -576,19 +575,19 @@ t0 = time.perf_counter()
 # begin training
 train_steps = args.num_iterations
 
-def _eval():  
-    val_bs = world_size * args.seq_len
-    assert args.val_tokens % val_bs == 0
-    val_steps = args.val_tokens // val_bs
-    val_loader = distributed_data_generator(args.val_files, val_bs, rank, world_size)
+def _eval():
+    val_batch_size = world_size * args.seq_len
+    assert args.val_tokens % val_batch_size == 0
+    val_steps = args.val_tokens // val_batch_size
+    val_loader = distributed_data_generator(args.val_files, val_batch_size, rank, world_size)
     val_loss = 0
     with torch.no_grad():
         for _ in range(val_steps):
             x, y = next(val_loader)
             val_loss += model(x, y, sw_num_blks(window_size))
-        val_loss /= val_steps
-        dist.all_reduce(val_loss, op=dist.ReduceOp.AVG)
+    val_loss /= val_steps
     del val_loader
+    dist.all_reduce(val_loss, op=dist.ReduceOp.AVG)
     return val_loss.item()
 
 for step in range(train_steps + 1):
@@ -604,6 +603,7 @@ for step in range(train_steps + 1):
     # Linearly increase the block-wise sliding window size over training 128 -> 1792:
     # increase by @fernbear.bsky.social; block-wise by @YouJiacheng
     window_size = next_multiple_of_n(1728 * step / train_steps, n=128)
+
     # --------------- VALIDATION SECTION -----------------
     if last_step or (args.val_loss_every > 0 and step % args.val_loss_every == 0):
         # stop the clock
@@ -612,7 +612,6 @@ for step in range(train_steps + 1):
         model.eval()
         val_loss = _eval()
         mem = f"{torch.cuda.memory_allocated() // 1024 // 1024} MiB "
-        # print0(f"step:{step: >4d}/{train_steps} val_loss:{val_loss:.4f} train_time:{training_time_ms:.0f}ms step_avg:{training_time_ms/(timed_steps-1):.2f}ms mem:{mem}", console=True)
         model.train()
         # start the clock again
         torch.cuda.synchronize()
@@ -626,7 +625,7 @@ for step in range(train_steps + 1):
         # the last step only has the validation loop, so break to avoid training
         break
 
-    # --------------- TRAINING SECTION BEGIN -----------------
+    # --------------- TRAINING SECTION -----------------
     inputs, targets = next(train_loader)
     total_loss = 0
     for input_seq, target_seq in zip(inputs.split(args.seq_len), targets.split(args.seq_len)):
@@ -689,7 +688,7 @@ for k in k_iterator:
                 module.set_k(k*4)
             else:
                 module.set_k(k)
-    
+
     torch.cuda.synchronize()
     val_loss = _eval()
     print0(f"k_eval | {k:>4d} | {val_loss:9.6f} |  {kind} | {DROPOUT_P} | {torch.cuda.memory_allocated() // 1024 // 1024}MB ", console=True)
