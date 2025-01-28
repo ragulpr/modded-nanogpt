@@ -306,12 +306,12 @@ class MLP(nn.Module):
         # Prob. of no dropout / example / mask
         #  batch_dim = [batch]     => 1-p            => (1-p)^n_layers           ex p=1-(1-0.1)^(1/n_layers)  ~=1e-2
         #  batch_dim = [batch,time]=> (1-p)^seq_len  => (1-p)^(seq_len*n_layers) ex p=1-(1-0.1)^(1/(1024*10)) ~=1e-5
-        # self.dropout = TailDropout(p=DROPOUT_P,batch_dim=0)
+        self.dropout = TailDropout(p=DROPOUT_P,batch_dim=0)
 
     def forward(self, x):
         x = self.c_fc(x)
         x = F.relu(x).square() # https://arxiv.org/abs/2109.08668v2; ~1-2% better than GELU; suggested by @SKYLINEZ007 and @Grad62304977
-        # x = self.dropout(x)
+        x = self.dropout(x)
         x = self.c_proj(x)
         return x
 
@@ -664,7 +664,6 @@ print0(f"TailDropout(p={DROPOUT_P}, batch_dim=0) @ MLP + pre-headpost norm", con
 print0(f'peak memory consumption: {torch.cuda.max_memory_allocated() // 1024 // 1024} MiB', console=True)
 print0(f"Current: {torch.cuda.memory_allocated() // 1024 // 1024}MB", console=True)
 
-k_iterator = [0, 1, 2, 4, 8, 16] + list(range(32, 768+1, 32))
 model.eval()
 
 # torch.compiler.reset()
@@ -676,17 +675,13 @@ torch._dynamo.config.cache_size_limit = 1000
     # perf_hints=True
 # )
 
-# # Change k for every layer
-# print0(f"TEST ({training_time_ms + 1000 * (time.perf_counter() - t0):.0f})", console=True)
-# for k in k_iterator:
-#     val_loss = _eval()
-#     print0(f"{k:>4d} | {val_loss:.6f} | mem: {torch.cuda.memory_allocated() // 1024 // 1024}MB | NONE", console=True)
-
 # Get marginal gain of k @ for all layers
 torch.cuda.synchronize()
 t0 = time.perf_counter()
+# TODO k @ mlp's , ...
 kind = "k @ all layers"
 print0(f"{kind} ({training_time_ms + 1000 * (time.perf_counter() - t0):.0f})", console=True)
+k_iterator = [0, 1, 2, 4, 8, 16] + list(range(32, 768+1, 32))
 for k in k_iterator:
     for name, module in model.named_modules():
         if isinstance(module, TailDropout):
@@ -700,7 +695,7 @@ for k in k_iterator:
     print0(f"k_eval | {k:>4d} | {val_loss:9.6f} |  {kind} | {DROPOUT_P} | {torch.cuda.memory_allocated() // 1024 // 1024}MB ", console=True)
     
 # Get marginal gain of k @ each layer
-k_iterator = [0, 1, 2, 4, 8, 16, 32, 64, 128] + list(range(256, 768+1, 256))
+k_iterator = [0, 1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 768]
 model.eval()
 print0(f"Leave-one-out ({training_time_ms + 1000 * (time.perf_counter() - t0):.0f})", console=True)
 max_name_length = max(len(name) for name, _ in model.named_modules())
@@ -708,7 +703,7 @@ for name, module in model.named_modules():
     if isinstance(module, TailDropout):
         for k in k_iterator:
             if 'mlp' in name:
-                k = k*4
+                k = k*4 # 4x wider & too slow otherwise
             module.set_k(k)
             val_loss = _eval()
             print0(f"k_eval | {k:>4d} | {val_loss:9.6f} |  {name:<{max_name_length}} | {DROPOUT_P} | {torch.cuda.memory_allocated() // 1024 // 1024}MB ", console=True)
