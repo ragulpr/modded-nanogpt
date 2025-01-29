@@ -482,7 +482,7 @@ class Hyperparameters:
     val_tokens = 10485760 # how many tokens of validation data? it's important to keep this fixed for consistent comparisons
     # optimization
     batch_size = 8*64*1024 # batch size in tokens
-    num_iterations = 3000 # number of iterations to run
+    num_iterations = 1 # number of iterations to run
     cooldown_frac = 0.4 # fraction of training spent cooling down the learning rate
     # evaluation and logging
     val_loss_every = 25 # every how many steps to evaluate val loss? 0 for only at the end
@@ -591,9 +591,9 @@ def _eval():
         for _ in range(val_steps):
             x, y = next(val_loader)
             val_loss += model(x, y, sw_num_blks(window_size))
-    val_loss /= val_steps
+        val_loss /= val_steps
+        dist.all_reduce(val_loss, op=dist.ReduceOp.AVG)
     del val_loader
-    dist.all_reduce(val_loss, op=dist.ReduceOp.AVG)
     return val_loss.item()
 
 for step in range(train_steps + 1):
@@ -671,7 +671,7 @@ print0(f"Current: {torch.cuda.memory_allocated() // 1024 // 1024}MB", console=Tr
 
 model.eval()
 
-# torch.compiler.reset()
+torch.compiler.reset()
 torch._dynamo.config.cache_size_limit = 1000
 # torch._logging.set_logs(
     # dynamo=logging.DEBUG,
