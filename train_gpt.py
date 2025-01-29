@@ -32,8 +32,8 @@ def mm_op(x: Tensor, w: Tensor, x_s: Tensor, w_s: Tensor, grad_s: Tensor) -> tup
             x_f8,
             w_f8.t(),
             out_dtype=torch.bfloat16,
-            scale_a=1 / x_s.float(),
-            scale_b=1 / w_s.float(),
+            scale_a=1 / x_s,
+            scale_b=1 / w_s,
             use_fast_accum=True,
         )
         return out, x_f8, w_f8
@@ -53,16 +53,14 @@ def mm_backward_op(g: Tensor, x_f8: Tensor, w_f8: Tensor, x_s: Tensor, w_s: Tens
     @torch.compile
     def impl(grad: Tensor, x_f8: Tensor, w_f8: Tensor):
         assert grad.is_contiguous()
-        x_inv_s = grad.new_tensor(1 / x_s, dtype=torch.float32)
-        w_inv_s = grad.new_tensor(1 / w_s, dtype=torch.float32)
-        grad_inv_s = grad.new_tensor(1 / grad_s, dtype=torch.float32)
+        grad_inv_s = 1 / grad_s
         grad_f8 = grad.mul(grad_s).to(torch.float8_e5m2)
         grad_x = torch._scaled_mm(
             grad_f8,
             w_f8.t().contiguous().t(),
             out_dtype=torch.bfloat16,
             scale_a=grad_inv_s,
-            scale_b=w_inv_s,
+            scale_b= 1 / w_s,
             use_fast_accum=False,
         )
         # faster than grad_f8_t @ x_f8, for (d_out, d_in) == (50304, 768)
@@ -70,7 +68,7 @@ def mm_backward_op(g: Tensor, x_f8: Tensor, w_f8: Tensor, x_s: Tensor, w_s: Tens
             x_f8.t().contiguous(),
             grad_f8.t().contiguous().t(),
             out_dtype=torch.float32,
-            scale_a=x_inv_s,
+            scale_a=1 / x_s,
             scale_b=grad_inv_s,
             use_fast_accum=False,
         ).t()
