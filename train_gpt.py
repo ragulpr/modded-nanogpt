@@ -21,9 +21,11 @@ from torch.nn.attention.flex_attention import BlockMask, flex_attention
 torch._inductor.config.coordinate_descent_tuning = False # turn this off for a faster compile time (but slightly slower run)
 from taildropout import TailDropout
 
-torch.cuda.manual_seed_all(0)
+torch.manual_seed(42)
+torch.cuda.manual_seed(42)
+torch.cuda.manual_seed_all(42)
 torch.backends.cudnn.deterministic = True
-torch.backends.cudnn.benchmark = False
+torch.backends.cudnn.benchmark = True
 
 # -----------------------------------------------------------------------------
 # Custom operators : FP8 matmul for lm_head by @YouJiacheng
@@ -271,47 +273,51 @@ class CausalSelfAttention(nn.Module):
         bound = (3 ** 0.5) * std # improved init scale by @YouJiacheng
         # merged QKV weights: suggested by many, implemented by @fernbear.bsky.social, and further improved by @YouJiacheng
         # https://x.com/hi_tysam/status/1879699187107033311
+        self.dropout_input = TailDropout(p=DROPOUT_P,batch_dim=0)
         self.qkv_w = nn.Parameter(torch.empty(3, hdim, dim).uniform_(-bound, bound))
         self.lambdas = nn.Parameter(torch.tensor([0.5, 0.5]))
+        self.dropout_ve = TailDropout(p=DROPOUT_P,batch_dim=0)
         self.rotary = Rotary(head_dim)
         self.c_proj = CastedLinear(hdim, dim)
         self.c_proj.weight.detach().zero_() # zero init suggested by @Grad62304977
         # scale the attention logits by given constant, instead of the default head_dim**-0.5, by @leloykun
         # inspired by learnable scalars used by @brendanh0gan https://x.com/hi_tysam/status/1879693583898591283
         self.attn_scale = 0.12
+        self.dropout_resid = TailDropout(p=DROPOUT_P,batch_dim=0)
 
     def forward(self, x: Tensor, ve: Tensor | None, block_mask: BlockMask):
         B, T = x.size(0), x.size(1) # batch size, sequence length
-        assert B == 1, "Must use batch size = 1 for FlexAttention"
+        assert B == 1, "Must use batch size = 1 for FlexAttention"        
+        x = self.dropout_input(x)
         q, k, v = F.linear(x, self.qkv_w.flatten(end_dim=1).type_as(x)).view(B, T, 3 * self.num_heads, self.head_dim).chunk(3, dim=-2)
         q, k = norm(q), norm(k) # QK norm @Grad62304977
         q, k = self.rotary(q), self.rotary(k)
         if ve is not None:
-            v = self.lambdas[0] * v + self.lambdas[1] * ve.view_as(v) # @KoszarskyB & @Grad62304977
+            v = self.lambdas[0] * v + self.lambdas[1] * self.dropout_ve(ve.view_as(v)) # @KoszarskyB & @Grad62304977
         else: # skip mid-layers token value embeddings by @YouJiacheng
             v = self.lambdas[0] * v
         y = flex_attention(q.transpose(1, 2), k.transpose(1, 2), v.transpose(1, 2), block_mask=block_mask, scale=self.attn_scale).transpose(1, 2)
         y = y.contiguous().view(B, T, self.num_heads * self.head_dim) # re-assemble all head outputs side by side
         y = self.c_proj(y)
+        x = self.dropout_resid(x)
         return y
 
 class MLP(nn.Module):
     def __init__(self, dim: int):
         super().__init__()
         hdim = 4 * dim
+        self.dropout_input = TailDropout(p=DROPOUT_P,batch_dim=0)
         self.c_fc = CastedLinear(dim, hdim)
         self.c_proj = CastedLinear(hdim, dim)
         self.c_proj.weight.detach().zero_() # zero init suggested by @Grad62304977
-        # Prob. of no dropout / example / mask
-        #  batch_dim = [batch]     => 1-p            => (1-p)^n_layers           ex p=1-(1-0.1)^(1/n_layers)  ~=1e-2
-        #  batch_dim = [batch,time]=> (1-p)^seq_len  => (1-p)^(seq_len*n_layers) ex p=1-(1-0.1)^(1/(1024*10)) ~=1e-5
-        self.dropout = TailDropout(p=DROPOUT_P,batch_dim=0)
+        self.dropout_resid = TailDropout(p=DROPOUT_P,batch_dim=0)
 
     def forward(self, x):
+        x = self.dropout_input(x)
         x = self.c_fc(x)
         x = F.relu(x).square() # https://arxiv.org/abs/2109.08668v2; ~1-2% better than GELU; suggested by @SKYLINEZ007 and @Grad62304977
-        x = self.dropout(x)
         x = self.c_proj(x)
+        x = self.dropout_resid(x)
         return x
 
 class Block(nn.Module):
@@ -335,7 +341,7 @@ class ValueEmbedding(nn.Module):
         self.embed = nn.ModuleList([nn.Embedding(num_embeddings, embedding_dim) for _ in range(3)])
 
     def forward(self, input_seq) -> list[Tensor | None]:
-        ve = [emb(input_seq) for emb in self.embed]
+        ve = [embed(input_seq) for embed in self.embed]
         # 012 ... 012 structure on token value embeddings by @YouJiacheng, improved on @leloykun's U-net structure
         ve = [ve[0], ve[1], ve[2], None, None, None, None, None, None, ve[0], ve[1], ve[2]]
         return ve
@@ -408,8 +414,9 @@ class GPT(nn.Module):
         assert input_seq.ndim == 1
 
         long_bm, short_bm = self.create_block_masks(input_seq, sliding_window_num_blocks)
-
-        x = x0 = norm(self.embed(input_seq)[None]) # use of norm here by @Grad62304977
+        
+        x = self.embed(input_seq)
+        x = x0 = norm(x[None]) # use of norm here by @Grad62304977
         ve = self.value_embeds(input_seq)
         assert len(ve) == len(self.blocks)
         ve_enc, ve_dec = ve[:self.num_encoder_layers], ve[self.num_encoder_layers:]
@@ -428,7 +435,6 @@ class GPT(nn.Module):
             x = x + self.skip_weights[i] * skip_connections.pop()
             x = self.blocks[self.num_encoder_layers + i](x, ve_dec[i], x0, block_masks[i])
         x = norm(x)
-        # x = self.dropout_head(x)
         logits = lm_head_fp8(x, self.lm_head.weight) if self.training else self.lm_head(x)
         # @Grad62304977 added tanh softcapping following Gemma 2 paper, @KoszarskyB reduced it from 30 to 15, @YouJiacheng shifted it by +15 (2*sigmoid(2*x)=tanh(x)+1)
         logits = 30 * torch.sigmoid(logits.float() / 7.5)
@@ -476,7 +482,7 @@ class Hyperparameters:
     val_tokens = 10485760 # how many tokens of validation data? it's important to keep this fixed for consistent comparisons
     # optimization
     batch_size = 8*64*1024 # batch size in tokens
-    num_iterations = 2000 # number of iterations to run
+    num_iterations = 3000 # number of iterations to run
     cooldown_frac = 0.4 # fraction of training spent cooling down the learning rate
     # evaluation and logging
     val_loss_every = 25 # every how many steps to evaluate val loss? 0 for only at the end
@@ -659,7 +665,7 @@ t0 = time.perf_counter()
 import warnings
 warnings.filterwarnings("ignore", message="Calling .")
 print0(f'VALIDATION @ taildropout {training_time_ms + 1000 * (time.perf_counter() - t0):.0f}', console=True)
-print0(f"TailDropout(p={DROPOUT_P}, batch_dim=0) @ MLP + pre-headpost norm", console=True)
+print0(f"TailDropout(p={DROPOUT_P}, batch_dim=0)", console=True)
 print0(f'peak memory consumption: {torch.cuda.max_memory_allocated() // 1024 // 1024} MiB', console=True)
 print0(f"Current: {torch.cuda.memory_allocated() // 1024 // 1024}MB", console=True)
 
@@ -684,10 +690,11 @@ k_iterator = [0, 1, 2, 4, 8, 16] + list(range(32, 768+1, 32))
 for k in k_iterator:
     for name, module in model.named_modules():
         if isinstance(module, TailDropout):
-            if 'mlp' in name:
-                module.set_k(k*4)
-            else:
-                module.set_k(k)
+            module.set_k(k)
+            # if 'mlp' in name:
+            #     module.set_k(k*4)
+            # else:
+            #     module.set_k(k)
 
     torch.cuda.synchronize()
     val_loss = _eval()
@@ -701,8 +708,8 @@ max_name_length = max(len(name) for name, _ in model.named_modules())
 for name, module in model.named_modules():
     if isinstance(module, TailDropout):
         for k in k_iterator:
-            if 'mlp' in name:
-                k = k*4 # 4x wider & too slow otherwise
+            # if 'mlp' in name:
+            #     k = k*4 # 4x wider & too slow otherwise
             module.set_k(k)
             val_loss = _eval()
             print0(f"k_eval | {k:>4d} | {val_loss:9.6f} |  {name:<{max_name_length}} | {DROPOUT_P} | {torch.cuda.memory_allocated() // 1024 // 1024}MB ", console=True)
