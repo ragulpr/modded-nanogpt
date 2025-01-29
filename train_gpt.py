@@ -32,8 +32,8 @@ def mm_op(x: Tensor, w: Tensor, x_s: Tensor, w_s: Tensor, grad_s: Tensor) -> tup
             x_f8,
             w_f8.t(),
             out_dtype=torch.bfloat16,
-            scale_a=1.0 / x_s, 
-            scale_b=1.0 / w_s,
+            scale_a=1 / x_s.float(),
+            scale_b=1 / w_s.float(),
             use_fast_accum=True,
         )
         return out, x_f8, w_f8
