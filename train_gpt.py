@@ -31,7 +31,7 @@ torch.backends.cudnn.benchmark = True
 # Custom operators : FP8 matmul for lm_head by @YouJiacheng
 
 @torch.library.custom_op("nanogpt::mm", mutates_args=())
-def mm_op(x: Tensor, w: Tensor, x_s: float, w_s: float, grad_s: float) -> tuple[Tensor, Tensor, Tensor]:
+def mm_op(x: Tensor, w: Tensor, x_s: Tensor, w_s: Tensor, grad_s: Tensor) -> tuple[Tensor, Tensor, Tensor]:
     @torch.compile
     def impl(x: Tensor, w: Tensor):
         assert x.is_contiguous() and w.is_contiguous()
@@ -41,8 +41,8 @@ def mm_op(x: Tensor, w: Tensor, x_s: float, w_s: float, grad_s: float) -> tuple[
             x_f8,
             w_f8.t(),
             out_dtype=torch.bfloat16,
-            scale_a=x.new_tensor(1 / x_s, dtype=torch.float32),
-            scale_b=x.new_tensor(1 / w_s, dtype=torch.float32),
+            scale_a=1 / x_s.float(),
+            scale_b=1 / w_s.float(),
             use_fast_accum=True,
         )
         return out, x_f8, w_f8
@@ -58,13 +58,13 @@ def _(x: Tensor, w: Tensor, *_):
     return x @ w.t(), x.to(torch.float8_e4m3fn), w.to(torch.float8_e4m3fn)
 
 @torch.library.custom_op("nanogpt::mm_backward", mutates_args=())
-def mm_backward_op(g: Tensor, x_f8: Tensor, w_f8: Tensor, x_s: float, w_s: float, grad_s: float) -> tuple[Tensor, Tensor]:
+def mm_backward_op(g: Tensor, x_f8: Tensor, w_f8: Tensor, x_s: Tensor, w_s: Tensor, grad_s: Tensor) -> tuple[Tensor, Tensor]:
     @torch.compile
     def impl(grad: Tensor, x_f8: Tensor, w_f8: Tensor):
         assert grad.is_contiguous()
-        x_inv_s = grad.new_tensor(1 / x_s, dtype=torch.float32)
-        w_inv_s = grad.new_tensor(1 / w_s, dtype=torch.float32)
-        grad_inv_s = grad.new_tensor(1 / grad_s, dtype=torch.float32)
+        x_inv_s = 1 / x_s.float()
+        w_inv_s = 1 / w_s.float()
+        grad_inv_s = 1 / grad_s.float()
         grad_f8 = grad.mul(grad_s).to(torch.float8_e5m2)
         grad_x = torch._scaled_mm(
             grad_f8,
@@ -110,7 +110,11 @@ mm_op.register_autograd(backward, setup_context=setup_context)
 
 def lm_head_fp8(x: Tensor, w: Tensor) -> Tensor:
     _x = x.flatten(0, -2)
-    out: Tensor = torch.ops.nanogpt.mm(_x, w, x_s=2.0, w_s=32.0, grad_s=2.0**29)[0]
+    out: Tensor = torch.ops.nanogpt.mm(_x, w,
+        x_s=_x.new_tensor(2.0, dtype=torch.float32),
+        w_s=_x.new_tensor(32.0, dtype=torch.float32),
+        grad_s=_x.new_tensor(2.0**29,dtype=torch.float32)
+    )[0]
     return out.reshape(*x.shape[:-1], -1)
 
 # -----------------------------------------------------------------------------
@@ -481,8 +485,8 @@ class Hyperparameters:
     val_files = "data/fineweb10B/fineweb_val_*.bin" # input .bin to eval validation loss on
     val_tokens = 10485760 # how many tokens of validation data? it's important to keep this fixed for consistent comparisons
     # optimization
-    batch_size = 8*64*1024 # batch size in tokens
-    num_iterations = 1 # number of iterations to run
+    batch_size = 1*64*1024 # batch size in tokens
+    num_iterations = 100 # number of iterations to run
     cooldown_frac = 0.4 # fraction of training spent cooling down the learning rate
     # evaluation and logging
     val_loss_every = 25 # every how many steps to evaluate val loss? 0 for only at the end
