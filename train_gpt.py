@@ -466,7 +466,7 @@ class Hyperparameters:
     train_seq_len = 48*1024 # FlexAttention sequence length
     val_seq_len = 4*64*1024 # FlexAttention sequence length for validation
     # optimization
-    num_iterations = 1770 # number of iterations to run
+    num_iterations = 17#70 # number of iterations to run
     cooldown_frac = 0.4 # fraction of training spent cooling down the learning rate
     # architecture
     vocab_size = 50257
@@ -488,7 +488,7 @@ DROPOUT_P = args.dropout_probability
 # torchrun sets these env variables
 rank = int(os.environ["RANK"])
 world_size = int(os.environ["WORLD_SIZE"])
-assert world_size == 8 # this code is designed for 8xH100
+assert world_size == 1 # this code is designed for 8xH100
 assert torch.cuda.is_available()
 device = torch.device("cuda", int(os.environ["LOCAL_RANK"]))
 torch.cuda.set_device(device)
@@ -610,7 +610,7 @@ t0 = time.perf_counter()
 train_steps = args.num_iterations
 
 def _eval():
-    val_batch_size = world_size * args.seq_len
+    val_batch_size = world_size * args.val_seq_len
     assert args.val_tokens % val_batch_size == 0
     val_steps = args.val_tokens // val_batch_size
     val_loader = distributed_data_generator(args.val_files, val_batch_size, rank, world_size)
@@ -671,8 +671,8 @@ for step in range(train_steps + 1):
     # null the gradients
     model.zero_grad(set_to_none=True)
     # logging
-    approx_time = training_time_ms + 1000 * (time.perf_counter() - t0)
-    print0(f"step:{step+1: >4d}/{train_steps} step_avg:{approx_time/timed_steps:.2f}ms loss: {avg_loss:9.6f} val_loss: {val_loss:9.6f} dropout_p: {DROPOUT_P}", console=True)
+    approx_training_time_ms = training_time_ms + 1000 * (time.perf_counter() - t0)
+    print0(f"step:{step+1: >4d}/{train_steps} step_avg:{approx_training_time_ms/(step + 1):.2f}ms loss: {avg_loss:9.6f} val_loss: {val_loss:9.6f} dropout_p: {DROPOUT_P} | x:{inputs.shape} y:{targets.shape}", console=True)
 
 torch.cuda.synchronize()
 t0 = time.perf_counter()
