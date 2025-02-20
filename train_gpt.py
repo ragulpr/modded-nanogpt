@@ -352,6 +352,10 @@ class GPT(nn.Module):
         # Add learnable skip connection weights for decoder layers
         assert num_layers % 2 == 0
         self.skip_weights = nn.Parameter(torch.ones(num_layers//2))
+        self._nonop = None
+
+    def _nonop(self, val):
+        self._nonop = val
 
     def create_blockmasks(self, input_seq: Tensor, sliding_window_num_blocks: Tensor):
         BLOCK_SIZE = 128
@@ -687,16 +691,26 @@ model.eval()
 
 torch.compiler.reset()
 torch._dynamo.config.cache_size_limit = 1000
-# torch._logging.set_logs(
+torch._logging.set_logs(
     # dynamo=logging.DEBUG,
     # recompiles=True,
-    # recompiles_verbose=True,
+    recompiles_verbose=True,
     # perf_hints=True
-# )
+)
 
 # Get marginal gain of k @ for all layers
 torch.cuda.synchronize()
 t0 = time.perf_counter()
+
+kind = "NONOP EXPERIMENT"
+print0(f"{kind} ({training_time_ms + 1000 * (time.perf_counter() - t0):.0f})", console=True)
+k_iterator = [0, 1, 2, 4, 8, 16] + list(range(32, 768+1, 32))
+for k in k_iterator:
+    model._nonop(k)
+    torch.cuda.synchronize()
+    val_loss = _eval()
+    print0(f"NONOP | {k:>4d} | {val_loss:9.6f} |  {kind} | {DROPOUT_P} | {torch.cuda.memory_allocated() // 1024 // 1024}MB ", console=True)
+
 # TODO k @ mlp's , ...
 kind = "k @ all layers"
 print0(f"{kind} ({training_time_ms + 1000 * (time.perf_counter() - t0):.0f})", console=True)
