@@ -352,10 +352,6 @@ class GPT(nn.Module):
         # Add learnable skip connection weights for decoder layers
         assert num_layers % 2 == 0
         self.skip_weights = nn.Parameter(torch.ones(num_layers//2))
-        self._nonop = None
-
-    def _nonop(self, val):
-        self._nonop = val
 
     def create_blockmasks(self, input_seq: Tensor, sliding_window_num_blocks: Tensor):
         BLOCK_SIZE = 128
@@ -613,7 +609,7 @@ t0 = time.perf_counter()
 # begin training
 train_steps = args.num_iterations
 
-def _eval():
+def _eval(step):
     val_batch_size = world_size * args.val_seq_len
     assert args.val_tokens % val_batch_size == 0
     val_steps = args.val_tokens // val_batch_size
@@ -637,7 +633,7 @@ for step in range(train_steps + 1):
         torch.cuda.synchronize()
         training_time_ms += 1000 * (time.perf_counter() - t0)
         model.eval()
-        val_loss = _eval()
+        val_loss = _eval(step)
         mem = f"{torch.cuda.memory_allocated() // 1024 // 1024} MiB "
         model.train()
         # start the clock again
@@ -688,7 +684,6 @@ print0(f'peak memory consumption: {torch.cuda.max_memory_allocated() // 1024 // 
 print0(f"Current: {torch.cuda.memory_allocated() // 1024 // 1024}MB", console=True)
 
 model.eval()
-
 torch.compiler.reset()
 torch._dynamo.config.cache_size_limit = 1000
 torch._logging.set_logs(
@@ -702,16 +697,23 @@ torch._logging.set_logs(
 torch.cuda.synchronize()
 t0 = time.perf_counter()
 
-kind = "NONOP EXPERIMENT"
+kind = "EXPERIMENT - Prime kernels k @ all layers, maybe it's the eager tracing that is expensive."
 print0(f"{kind} ({training_time_ms + 1000 * (time.perf_counter() - t0):.0f})", console=True)
 k_iterator = [0, 1, 2, 4, 8, 16] + list(range(32, 768+1, 32))
+inputs = targets = torch.randint(0, args.vocab_size, size=(args.val_seq_len,), device="cuda")
 for k in k_iterator:
-    model._nonop(k)
-    torch.cuda.synchronize()
-    val_loss = _eval()
-    print0(f"NONOP | {k:>4d} | {val_loss:9.6f} |  {kind} | {DROPOUT_P} | {torch.cuda.memory_allocated() // 1024 // 1024}MB ", console=True)
+    for name, module in model.named_modules():
+        if isinstance(module, TailDropout):
+            module.set_k(k)
+    # First call would be run eagerly to trace so best run it with slightly reduced data
+    with torch.no_grad():
+        model(inputs.to(torch.int32), targets, get_window_size_blocks(0))
 
-# TODO k @ mlp's , ...
+    torch.cuda.synchronize()
+    val_loss = _eval(step) # _eval(0) # <- Use smaller window
+    print0(f"Experiment k_eval | {k:>4d} | {val_loss:9.6f} |  {kind} | {DROPOUT_P} | {torch.cuda.memory_allocated() // 1024 // 1024}MB ", console=True)
+
+
 kind = "k @ all layers"
 print0(f"{kind} ({training_time_ms + 1000 * (time.perf_counter() - t0):.0f})", console=True)
 k_iterator = [0, 1, 2, 4, 8, 16] + list(range(32, 768+1, 32))
@@ -725,7 +727,7 @@ for k in k_iterator:
             #     module.set_k(k)
 
     torch.cuda.synchronize()
-    val_loss = _eval()
+    val_loss = _eval(step)
     print0(f"k_eval | {k:>4d} | {val_loss:9.6f} |  {kind} | {DROPOUT_P} | {torch.cuda.memory_allocated() // 1024 // 1024}MB ", console=True)
     
 # Get marginal gain of k @ each layer
@@ -739,7 +741,7 @@ for name, module in model.named_modules():
             # if 'mlp' in name:
             #     k = k*4 # 4x wider & too slow otherwise
             module.set_k(k)
-            val_loss = _eval()
+            val_loss = _eval(step)
             print0(f"k_eval | {k:>4d} | {val_loss:9.6f} |  {name:<{max_name_length}} | {DROPOUT_P} | {torch.cuda.memory_allocated() // 1024 // 1024}MB ", console=True)
 
         module.set_k(None)
