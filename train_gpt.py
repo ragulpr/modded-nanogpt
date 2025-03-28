@@ -698,15 +698,20 @@ torch.cuda.synchronize()
 t0 = time.perf_counter()
 
 kind = "EXPERIMENT - Prime kernels k @ all layers, maybe it's the eager tracing that is expensive."
+with torch.no_grad():
+    inputs = targets = torch.randint(0, args.vocab_size, size=(args.train_seq_len,), device="cuda")
+    model(inputs.to(torch.int32), targets, get_window_size_blocks(0))
+kind = "Works before set_k.."
 print0(f"{kind} ({training_time_ms + 1000 * (time.perf_counter() - t0):.0f})", console=True)
 k_iterator = [0, 1, 2, 4, 8, 16] + list(range(32, 768+1, 32))
-inputs = targets = torch.randint(0, args.vocab_size, size=(args.val_seq_len,), device="cuda")
+
 for k in k_iterator:
     for name, module in model.named_modules():
         if isinstance(module, TailDropout):
             module.set_k(k)
     # First call would be run eagerly to trace so best run it with slightly reduced data
     with torch.no_grad():
+        inputs = targets = torch.randint(0, args.vocab_size, size=(args.train_seq_len,), device="cuda")
         model(inputs.to(torch.int32), targets, get_window_size_blocks(0))
 
     torch.cuda.synchronize()
