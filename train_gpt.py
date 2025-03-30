@@ -418,6 +418,7 @@ class GPT(nn.Module):
                 skip_connections.append(x)
 
         x = norm(x)
+        print0(f"Shape to lm head:{x.shape}", console=True)
         logits = self.lm_head(x).float()
         # @Grad62304977 added tanh softcapping following Gemma 2 paper, @KoszarskyB reduced it from 30 to 15, @YouJiacheng shifted it by +15 (2*sigmoid(2*x)=tanh(x)+1)
         logits = 30 * torch.sigmoid(logits / (7.5 * x.size(-1)**0.5))
@@ -701,21 +702,26 @@ kind = "EXPERIMENT - Prime kernels k @ all layers, maybe it's the eager tracing 
 with torch.no_grad():
     inputs = targets = torch.randint(0, args.vocab_size, size=(args.val_seq_len,), device="cuda")
     model(inputs.to(torch.int32), targets, get_window_size_blocks(step))
+val_loss = _eval(step)
 kind = "Works before set_k.."
 print0(f"{kind} ({training_time_ms + 1000 * (time.perf_counter() - t0):.0f})", console=True)
 k_iterator = [0, 1, 2, 4, 8, 16] + list(range(32, 768+1, 32))
 
 for k in k_iterator:
+    # torch.compiler.reset() # TODO try
     for name, module in model.named_modules():
         if isinstance(module, TailDropout):
             module.set_k(k)
-    # First call would be run eagerly to trace so best run it with slightly reduced data
+    # First call would be run eagerly to trace so run with XS data
+    print0(f"{k:>4d} DEBUG Trace...{torch.cuda.memory_allocated() // 1024 // 1024}MB ", console=True)
     with torch.no_grad():
-        inputs = targets = torch.randint(0, args.vocab_size, size=(args.val_seq_len,), device="cuda")
+        inputs = targets = torch.randint(0, args.vocab_size, size=(1024,), device="cuda")
         model(inputs.to(torch.int32), targets, get_window_size_blocks(step))
-
+    print0(f"{k:>4d} DEBUG Call...{torch.cuda.memory_allocated() // 1024 // 1024}MB ", console=True)
+    # print(torch.cuda.memory_summary()) # TODO try
+    
     torch.cuda.synchronize()
-    val_loss = _eval(step) # _eval(0) # <- Use smaller window
+    val_loss = _eval(step)
     print0(f"Experiment k_eval | {k:>4d} | {val_loss:9.6f} |  {kind} | {DROPOUT_P} | {torch.cuda.memory_allocated() // 1024 // 1024}MB ", console=True)
 
 
