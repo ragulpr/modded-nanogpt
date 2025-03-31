@@ -719,6 +719,23 @@ print0("WORKS before set_k with long seq_len..",console=True)
 
 k_iterator = [0, 1, 2, 4, 8, 16] + list(range(32, 768+1, 32))
 
+# PRE-COMPILE
+inputs = targets = torch.randint(0, args.vocab_size, size=(args.val_seq_len,), device="cuda")
+for name, module in model.named_modules():
+    if isinstance(module, TailDropout):
+        module.set_k(0)
+with torch.no_grad():
+    model(inputs.to(torch.int32), targets, get_window_size_blocks(0))
+model.eval() # Reset k
+for name, module in model.named_modules():
+    if isinstance(module, TailDropout):
+        module.set_k(0)
+        with torch.no_grad():
+            model(inputs.to(torch.int32), targets, get_window_size_blocks(0))
+        module.set_k(None)
+
+print0(f'Compiled @ all k. eval cumem: {torch.cuda.memory_allocated() // 1024 // 1024}MB | cumem peak: {torch.cuda.max_memory_allocated() // 1024 // 1024} MiB', console=True)
+
 kind = "k @ all layers"
 print0(f"{kind} ({training_time_ms + 1000 * (time.perf_counter() - t0):.0f})", console=True)
 # k_iterator = [0, 1, 2, 4, 8, 16] + list(range(32, 768+1, 32))
@@ -747,6 +764,7 @@ for k in k_iterator:
 # Get marginal gain of k @ each layer
 # k_iterator = [0, 1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 768]
 k_iterator = [0, 1, 2]
+model.eval()
 print0(f"Leave-one-out ({training_time_ms + 1000 * (time.perf_counter() - t0):.0f})", console=True)
 max_name_length = max(len(name) for name, _ in model.named_modules())
 for name, module in model.named_modules():
