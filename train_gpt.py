@@ -717,18 +717,20 @@ k_iterator = [0, 1, 2, 4, 8, 16] + list(range(32, 768+1, 32))
 print0("COMPILED",console=True)
 # If running below eagerly it will fail @flex_attention "torch.OutOfMemoryError: CUDA out of memory. Tried to allocate 768.00 GiB....
 for k in k_iterator:
-    # torch.compiler.reset() # TODO try
+    torch.compiler.reset() # TODO try
     for name, module in model.named_modules():
         if isinstance(module, TailDropout):
             module.set_k(k)
-    # First call would be run eagerly to trace so run with XS data
-    print0(f"{k:>4d} DEBUG Trace...Curr: cumem: {torch.cuda.memory_allocated() // 1024 // 1024}MB | cumem peak: {torch.cuda.max_memory_allocated() // 1024 // 1024} MiB", console=True)
-    val_loss = _eval(0)
-    print0(f"{k:>4d} DEBUG Call ...Curr: cumem: {torch.cuda.memory_allocated() // 1024 // 1024}MB | cumem peak: {torch.cuda.max_memory_allocated() // 1024 // 1024} MiB", console=True)
+    # Does not help as to prime with smaller seq len as it'll retrace when facing val_seq:
+    # with torch.no_grad():
+    #     inputs = targets = torch.randint(0, args.vocab_size, size=(1024,), device="cuda")
+    #     model(inputs.to(torch.int32), targets, get_window_size_blocks(step))
+    # Does not help as it's clear OOM happens at lm_head when materializing val_seq_len*vocab_size @ .float()
+    # _eval(step=0)
     # print(torch.cuda.memory_summary()) # TODO try
     
     torch.cuda.synchronize()
-    # Below fails as [rank0]: torch.OutOfMemoryError: CUDA out of memory. Tried to allocate 49.12 GiB. GPU 0 has a total capacity of 79.11 GiB of which 47.83 GiB
+    # Below fails as [rank0]: torch.OutOfMemoryError: CUDA out of memory. Tried to allocate 49.12 GiB. GPU 0 has a total capacity of 79.11 GiB of which 47.83 GiB is free.
     val_loss = _eval(step)
     print0(f"Experiment k_eval | {k:>4d} | {val_loss:9.6f} |  {kind} | {DROPOUT_P} | cumem: {torch.cuda.memory_allocated() // 1024 // 1024}MB | cumem peak: {torch.cuda.max_memory_allocated() // 1024 // 1024} MiB", console=True)
 
