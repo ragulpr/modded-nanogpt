@@ -515,8 +515,8 @@ def print0(s, console=False):
 print0(code)
 print0("="*100)
 # log information about the hardware/software environment this is running on
-print0(f"Running Python {sys.version}")
-print0(f"Running PyTorch {torch.version.__version__} compiled for CUDA {torch.version.cuda}")
+print0(f"Running Python {sys.version}", console=True)
+print0(f"Running PyTorch {torch.version.__version__} compiled for CUDA {torch.version.cuda}", console=True)
 def nvidia_smi():
     import subprocess  # avoid top level import
     return subprocess.run(["nvidia-smi"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True).stdout
@@ -702,27 +702,30 @@ kind = "EXPERIMENT - Prime kernels k @ all layers, maybe it's the eager tracing 
 with torch.no_grad():
     inputs = targets = torch.randint(0, args.vocab_size, size=(args.val_seq_len,), device="cuda")
     model(inputs.to(torch.int32), targets, get_window_size_blocks(step))
+    print0(f'forward cumem: {torch.cuda.memory_allocated() // 1024 // 1024}MB | cumem peak: {torch.cuda.max_memory_allocated() // 1024 // 1024} MiB', console=True)
 val_loss = _eval(step)
+print0(f'eval cumem: {torch.cuda.memory_allocated() // 1024 // 1024}MB | cumem peak: {torch.cuda.max_memory_allocated() // 1024 // 1024} MiB', console=True)
 kind = "Works before set_k.."
 print0(f"{kind} ({training_time_ms + 1000 * (time.perf_counter() - t0):.0f})", console=True)
 k_iterator = [0, 1, 2, 4, 8, 16] + list(range(32, 768+1, 32))
 
+# TODO Run this in eager mode too!
 for k in k_iterator:
     # torch.compiler.reset() # TODO try
     for name, module in model.named_modules():
         if isinstance(module, TailDropout):
             module.set_k(k)
     # First call would be run eagerly to trace so run with XS data
-    print0(f"{k:>4d} DEBUG Trace...{torch.cuda.memory_allocated() // 1024 // 1024}MB ", console=True)
+    print0(f"{k:>4d} DEBUG Trace...Curr: cumem: {torch.cuda.memory_allocated() // 1024 // 1024}MB | cumem peak: {torch.cuda.max_memory_allocated() // 1024 // 1024} MiB", console=True)
     with torch.no_grad():
-        inputs = targets = torch.randint(0, args.vocab_size, size=(1024,), device="cuda")
+        inputs = targets = torch.randint(0, args.vocab_size, size=(args.val_seq_len,), device="cuda") # TODO try (4*64-2)*1024
         model(inputs.to(torch.int32), targets, get_window_size_blocks(step))
-    print0(f"{k:>4d} DEBUG Call...{torch.cuda.memory_allocated() // 1024 // 1024}MB ", console=True)
+    print0(f"{k:>4d} DEBUG Call ...Curr: cumem: {torch.cuda.memory_allocated() // 1024 // 1024}MB | cumem peak: {torch.cuda.max_memory_allocated() // 1024 // 1024} MiB", console=True)
     # print(torch.cuda.memory_summary()) # TODO try
     
     torch.cuda.synchronize()
     val_loss = _eval(step)
-    print0(f"Experiment k_eval | {k:>4d} | {val_loss:9.6f} |  {kind} | {DROPOUT_P} | {torch.cuda.memory_allocated() // 1024 // 1024}MB ", console=True)
+    print0(f"Experiment k_eval | {k:>4d} | {val_loss:9.6f} |  {kind} | {DROPOUT_P} | cumem: {torch.cuda.memory_allocated() // 1024 // 1024}MB | cumem peak: {torch.cuda.max_memory_allocated() // 1024 // 1024} MiB", console=True)
 
 
 kind = "k @ all layers"
@@ -739,8 +742,9 @@ for k in k_iterator:
 
     torch.cuda.synchronize()
     val_loss = _eval(step)
-    print0(f"k_eval | {k:>4d} | {val_loss:9.6f} |  {kind} | {DROPOUT_P} | {torch.cuda.memory_allocated() // 1024 // 1024}MB ", console=True)
+    print0(f"k_eval | {k:>4d} | {val_loss:9.6f} |  {kind} | {DROPOUT_P} | cumem: {torch.cuda.memory_allocated() // 1024 // 1024}MB | cumem peak: {torch.cuda.max_memory_allocated() // 1024 // 1024} MiB", console=True)
     
+assert False
 # Get marginal gain of k @ each layer
 k_iterator = [0, 1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 768]
 model.eval()
@@ -753,7 +757,7 @@ for name, module in model.named_modules():
             #     k = k*4 # 4x wider & too slow otherwise
             module.set_k(k)
             val_loss = _eval(step)
-            print0(f"k_eval | {k:>4d} | {val_loss:9.6f} |  {name:<{max_name_length}} | {DROPOUT_P} | {torch.cuda.memory_allocated() // 1024 // 1024}MB ", console=True)
+            print0(f"k_eval | {k:>4d} | {val_loss:9.6f} |  {name:<{max_name_length}} | {DROPOUT_P} | cumem: {torch.cuda.memory_allocated() // 1024 // 1024}MB | cumem peak: {torch.cuda.max_memory_allocated() // 1024 // 1024} MiB", console=True)
 
         module.set_k(None)
 
