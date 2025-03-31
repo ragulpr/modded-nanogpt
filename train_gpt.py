@@ -471,7 +471,7 @@ class Hyperparameters:
     val_files = "data/fineweb10B/fineweb_val_*.bin" # input .bin to eval validation loss on
     val_tokens = 10485760 # how many tokens of validation data? it's important to keep this fixed for consistent comparisons
     train_seq_len = 48*1024 # FlexAttention sequence length
-    val_seq_len = 4*64*1024 # FlexAttention sequence length for validation
+    val_seq_len = 2*64*1024 # TODO OOM at set_k otherwise #4*64*1024 # FlexAttention sequence length for validation
     # optimization
     num_iterations = 1#770 # number of iterations to run
     cooldown_frac = 0.4 # fraction of training spent cooling down the learning rate
@@ -712,6 +712,7 @@ model.train()
 val_loss = _eval(step)
 model.eval()
 val_loss = _eval(step)
+torch.cuda.synchronize()
 print0(f'eval cumem: {torch.cuda.memory_allocated() // 1024 // 1024}MB | cumem peak: {torch.cuda.max_memory_allocated() // 1024 // 1024} MiB', console=True)
 print0("WORKS before set_k with long seq_len..",console=True)
 
@@ -756,7 +757,6 @@ for k in k_iterator:
     val_loss = _eval(step)
     print0(f"k_eval | {k:>4d} | {val_loss:9.6f} |  {kind} | {DROPOUT_P} | cumem: {torch.cuda.memory_allocated() // 1024 // 1024}MB | cumem peak: {torch.cuda.max_memory_allocated() // 1024 // 1024} MiB", console=True)
     
-assert False
 # Get marginal gain of k @ each layer
 k_iterator = [0, 1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 768]
 model.eval()
@@ -765,8 +765,6 @@ max_name_length = max(len(name) for name, _ in model.named_modules())
 for name, module in model.named_modules():
     if isinstance(module, TailDropout):
         for k in k_iterator:
-            # if 'mlp' in name:
-            #     k = k*4 # 4x wider & too slow otherwise
             module.set_k(k)
             val_loss = _eval(step)
             print0(f"k_eval | {k:>4d} | {val_loss:9.6f} |  {name:<{max_name_length}} | {DROPOUT_P} | cumem: {torch.cuda.memory_allocated() // 1024 // 1024}MB | cumem peak: {torch.cuda.max_memory_allocated() // 1024 // 1024} MiB", console=True)
