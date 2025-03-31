@@ -714,27 +714,8 @@ print0(f"{kind} ({training_time_ms + 1000 * (time.perf_counter() - t0):.0f})", c
 
 k_iterator = [0, 1, 2, 4, 8, 16] + list(range(32, 768+1, 32))
 
-print0("EAGER",console=True)
-with torch.compiler.set_stance("force_eager"):
-    for k in k_iterator:
-        # torch.compiler.reset() # TODO try
-        for name, module in model.named_modules():
-            if isinstance(module, TailDropout):
-                module.set_k(k)
-        # First call would be run eagerly to trace so run with XS data
-        print0(f"{k:>4d} DEBUG Trace...Curr: cumem: {torch.cuda.memory_allocated() // 1024 // 1024}MB | cumem peak: {torch.cuda.max_memory_allocated() // 1024 // 1024} MiB", console=True)
-        with torch.no_grad():
-            inputs = targets = torch.randint(0, args.vocab_size, size=(args.val_seq_len,), device="cuda") # TODO try (4*64-2)*1024
-            model(inputs.to(torch.int32), targets, get_window_size_blocks(step))
-        print0(f"{k:>4d} DEBUG Call ...Curr: cumem: {torch.cuda.memory_allocated() // 1024 // 1024}MB | cumem peak: {torch.cuda.max_memory_allocated() // 1024 // 1024} MiB", console=True)
-        # print(torch.cuda.memory_summary()) # TODO try
-        
-        torch.cuda.synchronize()
-        val_loss = _eval(step)
-        print0(f"Experiment k_eval | {k:>4d} | {val_loss:9.6f} |  {kind} | {DROPOUT_P} | cumem: {torch.cuda.memory_allocated() // 1024 // 1024}MB | cumem peak: {torch.cuda.max_memory_allocated() // 1024 // 1024} MiB", console=True)
-
 print0("COMPILED",console=True)
-# TODO Run this in eager mode too!
+# If running below eagerly it will fail @flex_attention "torch.OutOfMemoryError: CUDA out of memory. Tried to allocate 768.00 GiB....
 for k in k_iterator:
     # torch.compiler.reset() # TODO try
     for name, module in model.named_modules():
