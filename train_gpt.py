@@ -699,6 +699,19 @@ torch.cuda.synchronize()
 t0 = time.perf_counter()
 
 kind = "EXPERIMENT - Prime kernels k @ all layers, maybe it's the eager tracing that is expensive."
+
+print0("Before set k EAGER",console=True)
+with torch.compiler.set_stance("force_eager"):
+    with torch.no_grad():
+        inputs = targets = torch.randint(0, args.vocab_size, size=(args.val_seq_len,), device="cuda")
+        model(inputs.to(torch.int32), targets, get_window_size_blocks(step))
+        print0(f'forward cumem: {torch.cuda.memory_allocated() // 1024 // 1024}MB | cumem peak: {torch.cuda.max_memory_allocated() // 1024 // 1024} MiB', console=True)
+    val_loss = _eval(step)
+    print0(f'eval cumem: {torch.cuda.memory_allocated() // 1024 // 1024}MB | cumem peak: {torch.cuda.max_memory_allocated() // 1024 // 1024} MiB', console=True)
+    kind = "Works before set_k.."
+    print0(f"{kind} ({training_time_ms + 1000 * (time.perf_counter() - t0):.0f})", console=True)
+
+print0("Before set k COMPILED",console=True)
 with torch.no_grad():
     inputs = targets = torch.randint(0, args.vocab_size, size=(args.val_seq_len,), device="cuda")
     model(inputs.to(torch.int32), targets, get_window_size_blocks(step))
@@ -707,6 +720,8 @@ val_loss = _eval(step)
 print0(f'eval cumem: {torch.cuda.memory_allocated() // 1024 // 1024}MB | cumem peak: {torch.cuda.max_memory_allocated() // 1024 // 1024} MiB', console=True)
 kind = "Works before set_k.."
 print0(f"{kind} ({training_time_ms + 1000 * (time.perf_counter() - t0):.0f})", console=True)
+
+
 k_iterator = [0, 1, 2, 4, 8, 16] + list(range(32, 768+1, 32))
 
 print0("EAGER",console=True)
