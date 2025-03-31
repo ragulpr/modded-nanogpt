@@ -698,18 +698,16 @@ torch._logging.set_logs(
 torch.cuda.synchronize()
 t0 = time.perf_counter()
 
-kind = "EXPERIMENT - Prime kernels k @ all layers, maybe it's the eager tracing that is expensive."
+kind = ""
 
 print0("Before set k COMPILED",console=True)
-# If running below eagerly it will fail @flex_attention "torch.OutOfMemoryError: CUDA out of memory. Tried to allocate 768.00 GiB. GPU 0 has a total capacity of 79.11 GiB of which 70.05 GiB is free. Process 55913 has 9.05 GiB memory in use. Of the allocated memory 7.59 GiB is allocated by PyTorch, and 270.75 MiB is reserved by PyTorch but unallocated"
-with torch.no_grad():
-    inputs = targets = torch.randint(0, args.vocab_size, size=(args.val_seq_len,), device="cuda")
-    model(inputs.to(torch.int32), targets, get_window_size_blocks(step))
-    print0(f'forward cumem: {torch.cuda.memory_allocated() // 1024 // 1024}MB | cumem peak: {torch.cuda.max_memory_allocated() // 1024 // 1024} MiB', console=True)
+# If running below eagerly below will fail @flex_attention "torch.OutOfMemoryError: CUDA out of memory. Tried to allocate 768.00 GiB. GPU 0 has a total capacity of 79.11 GiB of which 70.05 GiB is free. Process 55913 has 9.05 GiB memory in use. Of the allocated memory 7.59 GiB is allocated by PyTorch, and 270.75 MiB is reserved by PyTorch but unallocated"
+model.train()
+val_loss = _eval(step)
+model.eval()
 val_loss = _eval(step)
 print0(f'eval cumem: {torch.cuda.memory_allocated() // 1024 // 1024}MB | cumem peak: {torch.cuda.max_memory_allocated() // 1024 // 1024} MiB', console=True)
-kind = "Works before set_k.."
-print0(f"{kind} ({training_time_ms + 1000 * (time.perf_counter() - t0):.0f})", console=True)
+print0("Works before set_k with long seq_len..",console=True)
 
 
 k_iterator = [0, 1, 2, 4, 8, 16] + list(range(32, 768+1, 32))
@@ -717,7 +715,7 @@ k_iterator = [0, 1, 2, 4, 8, 16] + list(range(32, 768+1, 32))
 print0("COMPILED",console=True)
 # If running below eagerly it will fail @flex_attention "torch.OutOfMemoryError: CUDA out of memory. Tried to allocate 768.00 GiB....
 for k in k_iterator:
-    torch.compiler.reset() # TODO try
+    # torch.compiler.reset() # Does not help
     for name, module in model.named_modules():
         if isinstance(module, TailDropout):
             module.set_k(k)
