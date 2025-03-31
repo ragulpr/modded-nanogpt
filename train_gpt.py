@@ -277,7 +277,6 @@ class CausalSelfAttention(nn.Module):
         self.dropout_input = TailDropout(p=DROPOUT_P,batch_dim=0)
         self.qkv_w = nn.Parameter(torch.empty(3, hdim, dim).uniform_(-bound, bound))
         self.lambdas = nn.Parameter(torch.tensor([0.5, 0.5]))
-        self.dropout_ve = TailDropout(p=DROPOUT_P,batch_dim=0)
         self.rotary = Rotary(head_dim, max_seq_len)
         self.c_proj = CastedLinear(hdim, dim)
         self.c_proj.weight.detach().zero_() # zero init suggested by @Grad62304977
@@ -291,7 +290,8 @@ class CausalSelfAttention(nn.Module):
         q, k = norm(q), norm(k) # QK norm @Grad62304977
         q, k = self.rotary(q), self.rotary(k)
         if ve is not None:
-            v = self.lambdas[0] * v + self.lambdas[1] * self.dropout_ve(ve.view_as(v)) # @KoszarskyB & @Grad62304977
+            # TODO note no dropout on VE
+            v = self.lambdas[0] * v + self.lambdas[1] * ve.view_as(v) # @KoszarskyB & @Grad62304977
         else: # skip mid-layers token value embeddings by @YouJiacheng
             v = self.lambdas[0] * v
         # scale the attention logits by given constant, instead of the default head_dim**-0.5, by @leloykun
