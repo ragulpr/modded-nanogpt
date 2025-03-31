@@ -28,6 +28,12 @@ torch.cuda.manual_seed(42)
 torch.cuda.manual_seed_all(42)
 # torch.backends.cudnn.deterministic = True
 # torch.backends.cudnn.benchmark = True
+torch._logging.set_logs(
+    # dynamo=logging.DEBUG,
+    # recompiles=True,
+    recompiles_verbose=True,
+    # perf_hints=True
+)
 
 # -----------------------------------------------------------------------------
 # Custom operators: FP8 matmul by @YouJiacheng
@@ -467,7 +473,7 @@ class Hyperparameters:
     train_seq_len = 48*1024 # FlexAttention sequence length
     val_seq_len = 4*64*1024 # FlexAttention sequence length for validation
     # optimization
-    num_iterations = 17#70 # number of iterations to run
+    num_iterations = 1#770 # number of iterations to run
     cooldown_frac = 0.4 # fraction of training spent cooling down the learning rate
     # architecture
     vocab_size = 50257
@@ -701,25 +707,26 @@ t0 = time.perf_counter()
 kind = ""
 
 print0("Before set k COMPILED",console=True)
-# If running below eagerly below will fail @flex_attention "torch.OutOfMemoryError: CUDA out of memory. Tried to allocate 768.00 GiB. GPU 0 has a total capacity of 79.11 GiB of which 70.05 GiB is free. Process 55913 has 9.05 GiB memory in use. Of the allocated memory 7.59 GiB is allocated by PyTorch, and 270.75 MiB is reserved by PyTorch but unallocated"
+# DEBUG If running below eagerly below will fail @flex_attention "torch.OutOfMemoryError: CUDA out of memory. Tried to allocate 768.00 GiB. GPU 0 has a total capacity of 79.11 GiB of which 70.05 GiB is free. Process 55913 has 9.05 GiB memory in use. Of the allocated memory 7.59 GiB is allocated by PyTorch, and 270.75 MiB is reserved by PyTorch but unallocated"
 model.train()
 val_loss = _eval(step)
 model.eval()
 val_loss = _eval(step)
 print0(f'eval cumem: {torch.cuda.memory_allocated() // 1024 // 1024}MB | cumem peak: {torch.cuda.max_memory_allocated() // 1024 // 1024} MiB', console=True)
-print0("Works before set_k with long seq_len..",console=True)
+print0("WORKS before set_k with long seq_len..",console=True)
 
 
 k_iterator = [0, 1, 2, 4, 8, 16] + list(range(32, 768+1, 32))
 
-print0("COMPILED",console=True)
-# If running below eagerly it will fail @flex_attention "torch.OutOfMemoryError: CUDA out of memory. Tried to allocate 768.00 GiB....
+print0("Try setting k @ each layer",console=True)
+# DEBUG If running below eagerly it will fail @flex_attention "torch.OutOfMemoryError: CUDA out of memory. Tried to allocate 768.00 GiB....
+# DEBUG os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True" # Does not change anything..
 for k in k_iterator:
-    # torch.compiler.reset() # Does not help
+    # DEBUG torch.compiler.reset() # Does not help
     for name, module in model.named_modules():
         if isinstance(module, TailDropout):
             module.set_k(k)
-    # Does not help as to prime with smaller seq len as it'll retrace when facing val_seq:
+    # DEBUG Does not help as to prime with smaller seq len as it'll retrace when facing val_seq:
     # with torch.no_grad():
     #     inputs = targets = torch.randint(0, args.vocab_size, size=(1024,), device="cuda")
     #     model(inputs.to(torch.int32), targets, get_window_size_blocks(step))
@@ -728,7 +735,7 @@ for k in k_iterator:
     # print(torch.cuda.memory_summary()) # TODO try
     
     torch.cuda.synchronize()
-    # Below fails as [rank0]: torch.OutOfMemoryError: CUDA out of memory. Tried to allocate 49.12 GiB. GPU 0 has a total capacity of 79.11 GiB of which 47.83 GiB is free.
+    # DEBUG Below fails as [rank0]: torch.OutOfMemoryError: CUDA out of memory. Tried to allocate 49.12 GiB. GPU 0 has a total capacity of 79.11 GiB of which 47.83 GiB is free.
     val_loss = _eval(step)
     print0(f"Experiment k_eval | {k:>4d} | {val_loss:9.6f} |  {kind} | {DROPOUT_P} | cumem: {torch.cuda.memory_allocated() // 1024 // 1024}MB | cumem peak: {torch.cuda.max_memory_allocated() // 1024 // 1024} MiB", console=True)
 
