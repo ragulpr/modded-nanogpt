@@ -418,7 +418,7 @@ class GPT(nn.Module):
                 skip_connections.append(x)
 
         x = norm(x)
-        print0(f"Shape to lm head:{x.shape}", console=True)
+        # print0(f"Shape to lm head:{x.shape}", console=True)
         logits = self.lm_head(x).float()
         # @Grad62304977 added tanh softcapping following Gemma 2 paper, @KoszarskyB reduced it from 30 to 15, @YouJiacheng shifted it by +15 (2*sigmoid(2*x)=tanh(x)+1)
         logits = 30 * torch.sigmoid(logits / (7.5 * x.size(-1)**0.5))
@@ -681,8 +681,8 @@ import warnings
 warnings.filterwarnings("ignore", message="Calling .")
 print0(f'VALIDATION @ taildropout {training_time_ms + 1000 * (time.perf_counter() - t0):.0f}', console=True)
 print0(f"TailDropout(p={DROPOUT_P}, batch_dim=0)", console=True)
-print0(f'peak memory consumption: {torch.cuda.max_memory_allocated() // 1024 // 1024} MiB', console=True)
-print0(f"Current: {torch.cuda.memory_allocated() // 1024 // 1024}MB", console=True)
+print0(f'peak memory consumption: {torch.cuda.max_memory_allocated() // 1024 // 1024} MiB', console=True) # peak memory consumption: 31083 MiB
+print0(f"Current: {torch.cuda.memory_allocated() // 1024 // 1024}MB", console=True) # Current: 3446MB
 
 model.eval()
 torch.compiler.reset()
@@ -710,8 +710,7 @@ print0(f"{kind} ({training_time_ms + 1000 * (time.perf_counter() - t0):.0f})", c
 k_iterator = [0, 1, 2, 4, 8, 16] + list(range(32, 768+1, 32))
 
 print0("EAGER",console=True)
-import torch._dynamo
-with torch._dynamo.disable():
+with torch.compiler.set_stance("force_eager"):
     for k in k_iterator:
         # torch.compiler.reset() # TODO try
         for name, module in model.named_modules():
