@@ -599,6 +599,27 @@ for _ in range(warmup_steps):
     for opt in optimizers:
         opt.step()
     model.zero_grad(set_to_none=True)
+## DEBUG
+# PRE-COMPILE
+print0(f'Compile todo: {torch.cuda.memory_allocated() // 1024 // 1024}MB | cumem peak: {torch.cuda.max_memory_allocated() // 1024 // 1024} MiB', console=True)
+inputs = targets = torch.randint(0, args.vocab_size, size=(args.val_seq_len,), device="cuda")
+inputs = inputs.to(torch.int32)
+for name, module in model.named_modules():
+    if isinstance(module, TailDropout):
+        module.set_k(0)
+with torch.no_grad():
+    model(inputs, targets, get_window_size_blocks(0))
+model.eval() # Reset k
+for name, module in model.named_modules():
+    if isinstance(module, TailDropout):
+        module.set_k(0)
+        with torch.no_grad():
+            model(inputs, targets, get_window_size_blocks(0))
+        module.set_k(None)
+model.train() # Reset k
+print0(f'Compile done: {torch.cuda.memory_allocated() // 1024 // 1024}MB | cumem peak: {torch.cuda.max_memory_allocated() // 1024 // 1024} MiB', console=True)
+### DEBUG
+
 model.load_state_dict(initial_state["model"])
 for opt, opt_state in zip(optimizers, initial_state["optimizers"]):
     opt.load_state_dict(opt_state)
