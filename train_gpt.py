@@ -723,13 +723,12 @@ for k in k_iterator:
             module.set_k(k)
     # First call would be run eagerly to trace so run with XS data
     print0(f"{k:>4d} DEBUG Trace...Curr: cumem: {torch.cuda.memory_allocated() // 1024 // 1024}MB | cumem peak: {torch.cuda.max_memory_allocated() // 1024 // 1024} MiB", console=True)
-    with torch.no_grad():
-        inputs = targets = torch.randint(0, args.vocab_size, size=(args.val_seq_len,), device="cuda") # TODO try (4*64-2)*1024
-        model(inputs.to(torch.int32), targets, get_window_size_blocks(step))
+    val_loss = _eval(0)
     print0(f"{k:>4d} DEBUG Call ...Curr: cumem: {torch.cuda.memory_allocated() // 1024 // 1024}MB | cumem peak: {torch.cuda.max_memory_allocated() // 1024 // 1024} MiB", console=True)
     # print(torch.cuda.memory_summary()) # TODO try
     
     torch.cuda.synchronize()
+    # Below fails as [rank0]: torch.OutOfMemoryError: CUDA out of memory. Tried to allocate 49.12 GiB. GPU 0 has a total capacity of 79.11 GiB of which 47.83 GiB
     val_loss = _eval(step)
     print0(f"Experiment k_eval | {k:>4d} | {val_loss:9.6f} |  {kind} | {DROPOUT_P} | cumem: {torch.cuda.memory_allocated() // 1024 // 1024}MB | cumem peak: {torch.cuda.max_memory_allocated() // 1024 // 1024} MiB", console=True)
 
