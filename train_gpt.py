@@ -591,14 +591,6 @@ model: nn.Module = torch.compile(model, dynamic=False)
 warmup_steps = 10
 initial_state = dict(model=copy.deepcopy(model.state_dict()),
                      optimizers=[copy.deepcopy(opt.state_dict()) for opt in optimizers]) # save the initial state
-for _ in range(warmup_steps):
-    inputs = targets = torch.randint(0, args.vocab_size, size=(args.train_seq_len,), device="cuda")
-    model(inputs.to(torch.int32), targets, get_window_size_blocks(0)).backward()
-    for param in model.parameters():
-        dist.all_reduce(param.grad, op=dist.ReduceOp.AVG)
-    for opt in optimizers:
-        opt.step()
-    model.zero_grad(set_to_none=True)
 ## DEBUG
 # PRE-COMPILE
 print0(f'Compile todo: {torch.cuda.memory_allocated() // 1024 // 1024}MB | cumem peak: {torch.cuda.max_memory_allocated() // 1024 // 1024} MiB', console=True)
@@ -619,6 +611,15 @@ for name, module in model.named_modules():
 model.train() # Reset k
 print0(f'Compile done: {torch.cuda.memory_allocated() // 1024 // 1024}MB | cumem peak: {torch.cuda.max_memory_allocated() // 1024 // 1024} MiB', console=True)
 ### DEBUG
+
+for _ in range(warmup_steps):
+    inputs = targets = torch.randint(0, args.vocab_size, size=(args.train_seq_len,), device="cuda")
+    model(inputs.to(torch.int32), targets, get_window_size_blocks(0)).backward()
+    for param in model.parameters():
+        dist.all_reduce(param.grad, op=dist.ReduceOp.AVG)
+    for opt in optimizers:
+        opt.step()
+    model.zero_grad(set_to_none=True)
 
 model.load_state_dict(initial_state["model"])
 for opt, opt_state in zip(optimizers, initial_state["optimizers"]):
