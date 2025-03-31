@@ -719,7 +719,10 @@ print0("WORKS before set_k with long seq_len..",console=True)
 
 k_iterator = [0, 1, 2, 4, 8, 16] + list(range(32, 768+1, 32))
 
-print0("Try setting k @ each layer",console=True)
+kind = "k @ all layers"
+print0(f"{kind} ({training_time_ms + 1000 * (time.perf_counter() - t0):.0f})", console=True)
+# k_iterator = [0, 1, 2, 4, 8, 16] + list(range(32, 768+1, 32))
+k_iterator = [0, 1, 2]
 # DEBUG If running below eagerly it will fail @flex_attention "torch.OutOfMemoryError: CUDA out of memory. Tried to allocate 768.00 GiB....
 # DEBUG os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True" # Does not change anything..
 for k in k_iterator:
@@ -738,28 +741,12 @@ for k in k_iterator:
     torch.cuda.synchronize()
     # DEBUG Below fails as [rank0]: torch.OutOfMemoryError: CUDA out of memory. Tried to allocate 49.12 GiB. GPU 0 has a total capacity of 79.11 GiB of which 47.83 GiB is free.
     val_loss = _eval(step)
-    print0(f"Experiment k_eval | {k:>4d} | {val_loss:9.6f} |  {kind} | {DROPOUT_P} | cumem: {torch.cuda.memory_allocated() // 1024 // 1024}MB | cumem peak: {torch.cuda.max_memory_allocated() // 1024 // 1024} MiB", console=True)
-
-
-kind = "k @ all layers"
-print0(f"{kind} ({training_time_ms + 1000 * (time.perf_counter() - t0):.0f})", console=True)
-k_iterator = [0, 1, 2, 4, 8, 16] + list(range(32, 768+1, 32))
-for k in k_iterator:
-    for name, module in model.named_modules():
-        if isinstance(module, TailDropout):
-            module.set_k(k)
-            # if 'mlp' in name:
-            #     module.set_k(k*4)
-            # else:
-            #     module.set_k(k)
-
-    torch.cuda.synchronize()
-    val_loss = _eval(step)
     print0(f"k_eval | {k:>4d} | {val_loss:9.6f} |  {kind} | {DROPOUT_P} | cumem: {torch.cuda.memory_allocated() // 1024 // 1024}MB | cumem peak: {torch.cuda.max_memory_allocated() // 1024 // 1024} MiB", console=True)
+
     
 # Get marginal gain of k @ each layer
-k_iterator = [0, 1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 768]
-model.eval()
+# k_iterator = [0, 1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 768]
+k_iterator = [0, 1, 2]
 print0(f"Leave-one-out ({training_time_ms + 1000 * (time.perf_counter() - t0):.0f})", console=True)
 max_name_length = max(len(name) for name, _ in model.named_modules())
 for name, module in model.named_modules():
