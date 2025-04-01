@@ -1,3 +1,4 @@
+import logging
 import os
 import sys
 
@@ -31,7 +32,7 @@ torch.cuda.manual_seed_all(42)
 torch._logging.set_logs(
     # dynamo=logging.DEBUG,
     # recompiles=True,
-    recompiles_verbose=True,
+    # recompiles_verbose=True,
     # perf_hints=True
 )
 
@@ -413,19 +414,23 @@ class GPT(nn.Module):
 
         x = x0 = norm(self.embed(input_seq)[None]) # use of norm here by @Grad62304977
 
-        # U-net design by @brendanh0gan
-        skip_connections = []
-        n = len(self.skip_weights)
-        for i in range(len(self.blocks)):
-            if i >= n:
-                x = x + self.skip_weights[i - n] * skip_connections.pop()
-            x = self.blocks[i](x, ve[i], x0, block_masks[i])
-            # DEBUG: By setting this print statement below we get same memory usage on initial trace. And it never actually prints:
-            # if torch.compiler.is_compiling():
-            #     print0(f'{i}|{x.shape} cumem: {torch.cuda.memory_allocated() // 1024 // 1024}MB | cumem peak: {torch.cuda.max_memory_allocated() // 1024 // 1024} MiB', console=True)
-
-            if i < n:
-                skip_connections.append(x)
+        def _first_part(x,x0,ve,block_masks): # Wrap to avoid excessive mem @ compiletime
+            # U-net design by @brendanh0gan
+            skip_connections = []
+            n = len(self.skip_weights)
+            for i in range(len(self.blocks)):
+                if i >= n:
+                    x = x + self.skip_weights[i - n] * skip_connections.pop()
+                x = self.blocks[i](x, ve[i], x0, block_masks[i])
+                # DEBUG: By setting this print statement below we get same memory usage on initial trace. And it never actually prints:
+                # if torch.compiler.is_compiling():
+                #     print0(f'{i}|{x.shape} cumem: {torch.cuda.memory_allocated() // 1024 // 1024}MB | cumem peak: {torch.cuda.max_memory_allocated() // 1024 // 1024} MiB', console=True)
+    
+                if i < n:
+                    skip_connections.append(x)
+            return x
+        
+        x = _first_part(x,x0,ve,block_masks)
 
         # DEBUG: This will print during initial but not print during the compile step after set_k
         # if torch.compiler.is_compiling():
@@ -482,7 +487,7 @@ class Hyperparameters:
     val_files = "data/fineweb10B/fineweb_val_*.bin" # input .bin to eval validation loss on
     val_tokens = 10485760 # how many tokens of validation data? it's important to keep this fixed for consistent comparisons
     train_seq_len = 48*1024 # FlexAttention sequence length
-    val_seq_len = 2*64*1024 # TODO OOM at set_k otherwise #4*64*1024 # FlexAttention sequence length for validation
+    val_seq_len = 4*64*1024
     # optimization
     num_iterations = 1#770 # number of iterations to run
     cooldown_frac = 0.4 # fraction of training spent cooling down the learning rate
@@ -706,12 +711,12 @@ print0(f"Current: {torch.cuda.memory_allocated() // 1024 // 1024}MB", console=Tr
 model.eval()
 torch.compiler.reset()
 torch._dynamo.config.cache_size_limit = 1000
-torch._logging.set_logs(
+# torch._logging.set_logs(
     # dynamo=logging.DEBUG,
     # recompiles=True,
-    recompiles_verbose=True,
+    # recompiles_verbose=True,
     # perf_hints=True
-)
+# )
 
 # Get marginal gain of k @ for all layers
 torch.cuda.synchronize()
