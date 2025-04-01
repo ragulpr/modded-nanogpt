@@ -420,15 +420,26 @@ class GPT(nn.Module):
             if i >= n:
                 x = x + self.skip_weights[i - n] * skip_connections.pop()
             x = self.blocks[i](x, ve[i], x0, block_masks[i])
+            # DEBUG: By setting this print statement below we get same memory usage on initial trace. And it never actually prints:
+            # if torch.compiler.is_compiling():
+            #     print0(f'{i}|{x.shape} cumem: {torch.cuda.memory_allocated() // 1024 // 1024}MB | cumem peak: {torch.cuda.max_memory_allocated() // 1024 // 1024} MiB', console=True)
+
             if i < n:
                 skip_connections.append(x)
 
-        x = torch.compiler.barrier(x) # TODO check if this prevents mem buildup
+        # DEBUG: This will print during initial but not print during the compile step after set_k
+        # if torch.compiler.is_compiling():
+        #     print0(f'{x.shape} cumem: {torch.cuda.memory_allocated() // 1024 // 1024}MB | cumem peak: {torch.cuda.max_memory_allocated() // 1024 // 1024} MiB', console=True)
+
         x = norm(x)
-        logits = self.lm_head(x).float()
+        logits = self.lm_head(x).float() # val_seq_len * vocab_size = 4*64*1024*50257*4 bytes = 52.698284 gigabytes
         # @Grad62304977 added tanh softcapping following Gemma 2 paper, @KoszarskyB reduced it from 30 to 15, @YouJiacheng shifted it by +15 (2*sigmoid(2*x)=tanh(x)+1)
         logits = 30 * torch.sigmoid(logits / (7.5 * x.size(-1)**0.5))
         loss = F.cross_entropy(logits.view(-1, logits.size(-1)), target_seq, reduction='sum' if self.training else 'mean')
+        # DEBUG: Printing this influence peak memory usage on initial compile step
+        # if torch.compiler.is_compiling():
+        #     print0(f'{loss.shape} cumem: {torch.cuda.memory_allocated() // 1024 // 1024}MB | cumem peak: {torch.cuda.max_memory_allocated() // 1024 // 1024} MiB', console=True)
+
         return loss
 
 # -----------------------------------------------------------------------------
@@ -728,7 +739,7 @@ inputs = inputs.to(torch.int32)
 for name, module in model.named_modules():
     if isinstance(module, TailDropout):
         module.set_k(0)
-with torch.no_grad(): # TODO try to trace with grad instead
+with torch.no_grad(): # Tracing With Grad causes OOM.
     model(inputs, targets, get_window_size_blocks(0))
 model.eval() # Reset k
 for name, module in model.named_modules():
