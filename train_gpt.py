@@ -423,8 +423,8 @@ class GPT(nn.Module):
             if i < n:
                 skip_connections.append(x)
 
+        x = torch.compiler.barrier(x) # TODO check if this prevents mem buildup
         x = norm(x)
-        # print0(f"Shape to lm head:{x.shape}", console=True)
         logits = self.lm_head(x).float()
         # @Grad62304977 added tanh softcapping following Gemma 2 paper, @KoszarskyB reduced it from 30 to 15, @YouJiacheng shifted it by +15 (2*sigmoid(2*x)=tanh(x)+1)
         logits = 30 * torch.sigmoid(logits / (7.5 * x.size(-1)**0.5))
@@ -728,7 +728,7 @@ inputs = inputs.to(torch.int32)
 for name, module in model.named_modules():
     if isinstance(module, TailDropout):
         module.set_k(0)
-with torch.no_grad():
+with torch.no_grad(): # TODO try to trace with grad instead
     model(inputs, targets, get_window_size_blocks(0))
 model.eval() # Reset k
 for name, module in model.named_modules():
