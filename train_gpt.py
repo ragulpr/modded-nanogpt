@@ -29,12 +29,12 @@ torch.cuda.manual_seed(42)
 torch.cuda.manual_seed_all(42)
 # torch.backends.cudnn.deterministic = True
 # torch.backends.cudnn.benchmark = True
-torch._logging.set_logs(
+# torch._logging.set_logs(
     # dynamo=logging.DEBUG,
     # recompiles=True,
     # recompiles_verbose=True,
     # perf_hints=True
-)
+# )
 
 # -----------------------------------------------------------------------------
 # Custom operators: FP8 matmul by @YouJiacheng
@@ -414,7 +414,7 @@ class GPT(nn.Module):
 
         x = x0 = norm(self.embed(input_seq)[None]) # use of norm here by @Grad62304977
 
-        def _first_part(x,x0,ve,block_masks): # Wrap to avoid excessive mem @ compiletime
+        def _u_net_forward(x,x0,ve,block_masks): # Wrap to avoid excessive mem @ compiletime
             # U-net design by @brendanh0gan
             skip_connections = []
             n = len(self.skip_weights)
@@ -422,29 +422,16 @@ class GPT(nn.Module):
                 if i >= n:
                     x = x + self.skip_weights[i - n] * skip_connections.pop()
                 x = self.blocks[i](x, ve[i], x0, block_masks[i])
-                # DEBUG: By setting this print statement below we get same memory usage on initial trace. And it never actually prints:
-                # if torch.compiler.is_compiling():
-                #     print0(f'{i}|{x.shape} cumem: {torch.cuda.memory_allocated() // 1024 // 1024}MB | cumem peak: {torch.cuda.max_memory_allocated() // 1024 // 1024} MiB', console=True)
-    
                 if i < n:
                     skip_connections.append(x)
             return x
         
-        x = _first_part(x,x0,ve,block_masks)
-
-        # DEBUG: This will print during initial but not print during the compile step after set_k
-        # if torch.compiler.is_compiling():
-        #     print0(f'{x.shape} cumem: {torch.cuda.memory_allocated() // 1024 // 1024}MB | cumem peak: {torch.cuda.max_memory_allocated() // 1024 // 1024} MiB', console=True)
-
+        x = _u_net_forward(x,x0,ve,block_masks)
         x = norm(x)
         logits = self.lm_head(x).float() # val_seq_len * vocab_size = 4*64*1024*50257*4 bytes = 52.698284 gigabytes
         # @Grad62304977 added tanh softcapping following Gemma 2 paper, @KoszarskyB reduced it from 30 to 15, @YouJiacheng shifted it by +15 (2*sigmoid(2*x)=tanh(x)+1)
         logits = 30 * torch.sigmoid(logits / (7.5 * x.size(-1)**0.5))
         loss = F.cross_entropy(logits.view(-1, logits.size(-1)), target_seq, reduction='sum' if self.training else 'mean')
-        # DEBUG: Printing this influence peak memory usage on initial compile step
-        # if torch.compiler.is_compiling():
-        #     print0(f'{loss.shape} cumem: {torch.cuda.memory_allocated() // 1024 // 1024}MB | cumem peak: {torch.cuda.max_memory_allocated() // 1024 // 1024} MiB', console=True)
-
         return loss
 
 # -----------------------------------------------------------------------------
@@ -489,7 +476,7 @@ class Hyperparameters:
     train_seq_len = 48*1024 # FlexAttention sequence length
     val_seq_len = 4*64*1024
     # optimization
-    num_iterations = 1#770 # number of iterations to run
+    num_iterations = 3000 # 1770 # number of iterations to run
     cooldown_frac = 0.4 # fraction of training spent cooling down the learning rate
     # architecture
     vocab_size = 50257
@@ -511,7 +498,7 @@ DROPOUT_P = args.dropout_probability
 # torchrun sets these env variables
 rank = int(os.environ["RANK"])
 world_size = int(os.environ["WORLD_SIZE"])
-assert world_size == 1 # this code is designed for 8xH100
+assert world_size == 8 # this code is designed for 8xH100
 assert torch.cuda.is_available()
 device = torch.device("cuda", int(os.environ["LOCAL_RANK"]))
 torch.cuda.set_device(device)
@@ -705,8 +692,7 @@ import warnings
 warnings.filterwarnings("ignore", message="Calling .")
 print0(f'VALIDATION @ taildropout {training_time_ms + 1000 * (time.perf_counter() - t0):.0f}', console=True)
 print0(f"TailDropout(p={DROPOUT_P}, batch_dim=0)", console=True)
-print0(f'peak memory consumption: {torch.cuda.max_memory_allocated() // 1024 // 1024} MiB', console=True) # peak memory consumption: 31083 MiB
-print0(f"Current: {torch.cuda.memory_allocated() // 1024 // 1024}MB", console=True) # Current: 3446MB
+print0(f'cumem current: {torch.cuda.memory_allocated() // 1024 // 1024}MB | cumem peak: {torch.cuda.max_memory_allocated() // 1024 // 1024} MiB', console=True)
 
 model.eval()
 torch.compiler.reset()
@@ -718,23 +704,10 @@ torch._dynamo.config.cache_size_limit = 1000
     # perf_hints=True
 # )
 
-# Get marginal gain of k @ for all layers
 torch.cuda.synchronize()
 t0 = time.perf_counter()
 
 kind = ""
-
-print0("Before set k COMPILED",console=True)
-# DEBUG If running below eagerly below will fail @flex_attention "torch.OutOfMemoryError: CUDA out of memory. Tried to allocate 768.00 GiB. GPU 0 has a total capacity of 79.11 GiB of which 70.05 GiB is free. Process 55913 has 9.05 GiB memory in use. Of the allocated memory 7.59 GiB is allocated by PyTorch, and 270.75 MiB is reserved by PyTorch but unallocated"
-model.train()
-val_loss = _eval(step)
-model.eval()
-val_loss = _eval(step)
-torch.cuda.synchronize()
-print0(f'eval cumem: {torch.cuda.memory_allocated() // 1024 // 1024}MB | cumem peak: {torch.cuda.max_memory_allocated() // 1024 // 1024} MiB', console=True)
-print0("WORKS before set_k with long seq_len..",console=True)
-
-
 k_iterator = [0, 1, 2, 4, 8, 16] + list(range(32, 768+1, 32))
 
 # PRE-COMPILE
@@ -744,7 +717,7 @@ inputs = inputs.to(torch.int32)
 for name, module in model.named_modules():
     if isinstance(module, TailDropout):
         module.set_k(0)
-with torch.no_grad(): # Tracing With Grad causes OOM.
+with torch.no_grad():
     model(inputs, targets, get_window_size_blocks(0))
 model.eval() # Reset k
 for name, module in model.named_modules():
@@ -756,28 +729,17 @@ for name, module in model.named_modules():
 print0(f'Compile done: {torch.cuda.memory_allocated() // 1024 // 1024}MB | cumem peak: {torch.cuda.max_memory_allocated() // 1024 // 1024} MiB', console=True)
 
 
+# Get marginal gain of k @ for all layers
 kind = "k @ all layers"
 print0(f"{kind} ({training_time_ms + 1000 * (time.perf_counter() - t0):.0f})", console=True)
 # k_iterator = [0, 1, 2, 4, 8, 16] + list(range(32, 768+1, 32))
 k_iterator = [0]
 model.eval() # Reset k
-# DEBUG If running below eagerly it will fail @flex_attention "torch.OutOfMemoryError: CUDA out of memory. Tried to allocate 768.00 GiB....
-# DEBUG os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True" # Does not change anything..
 for k in k_iterator:
-    # DEBUG torch.compiler.reset() # Does not help
     for name, module in model.named_modules():
         if isinstance(module, TailDropout):
-            module.set_k(k)
-    # DEBUG Does not help as to prime with smaller seq len as it'll retrace when facing val_seq:
-    # with torch.no_grad():
-    #     inputs = targets = torch.randint(0, args.vocab_size, size=(1024,), device="cuda")
-    #     model(inputs.to(torch.int32), targets, get_window_size_blocks(step))
-    # Does not help as it's clear OOM happens at lm_head when materializing val_seq_len*vocab_size @ .float()
-    # _eval(step=0)
-    # print(torch.cuda.memory_summary()) # TODO try
-    
+            module.set_k(k)    
     torch.cuda.synchronize()
-    # DEBUG Below fails as [rank0]: torch.OutOfMemoryError: CUDA out of memory. Tried to allocate 49.12 GiB. GPU 0 has a total capacity of 79.11 GiB of which 47.83 GiB is free.
     val_loss = _eval(step)
     print0(f"k_eval | {k:>4d} | {val_loss:9.6f} |  {kind} | {DROPOUT_P} | cumem: {torch.cuda.memory_allocated() // 1024 // 1024}MB | cumem peak: {torch.cuda.max_memory_allocated() // 1024 // 1024} MiB", console=True)
 
