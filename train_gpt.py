@@ -666,7 +666,7 @@ for step in range(train_steps + 1):
     loss.backward()
 
     dist.all_reduce(loss, op=dist.ReduceOp.AVG)
-    avg_loss = loss.item()
+    avg_loss = loss.item() / args.train_seq_len
 
     for param in model.parameters():
         dist.all_reduce(param.grad, op=dist.ReduceOp.AVG)
@@ -684,7 +684,7 @@ for step in range(train_steps + 1):
     model.zero_grad(set_to_none=True)
     # logging
     approx_training_time_ms = training_time_ms + 1000 * (time.perf_counter() - t0)
-    print0(f"step:{step+1: >4d}/{train_steps} step_avg:{approx_training_time_ms/(step + 1):.2f}ms loss: {avg_loss:9.6f} val_loss: {val_loss:9.6f} dropout_p: {DROPOUT_P} | x:{inputs.shape} y:{targets.shape}", console=True)
+    print0(f"step:{step+1: >4d}/{train_steps} step_avg:{approx_training_time_ms/(step + 1):.2f}ms loss: {avg_loss:9.6f} val_loss: {val_loss:9.6f} dropout_p: {DROPOUT_P}", console=True)
 
 torch.cuda.synchronize()
 t0 = time.perf_counter()
